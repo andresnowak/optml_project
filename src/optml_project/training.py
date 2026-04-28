@@ -17,7 +17,8 @@ def train(
     log_every: int,
     feature_dim: int,
     samples: int,
-    matrix_size: int,
+    matrix_rows: int,
+    matrix_cols: int,
     rank: int,
     opt_kwargs: dict | None = None,
 ) -> list[float]:
@@ -26,7 +27,8 @@ def train(
         batch_size=batch_size,
         feature_dim=feature_dim,
         samples=samples,
-        matrix_size=matrix_size,
+        matrix_rows=matrix_rows,
+        matrix_cols=matrix_cols,
         rank=rank,
     )
     model = experiment.build_model()

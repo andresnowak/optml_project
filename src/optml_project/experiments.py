@@ -34,26 +34,27 @@ class LinearRegressionExperiment:
 
 
 class _MFModel(nn.Module):
-    def __init__(self, size, rank):
+    def __init__(self, m, k, n):
         super().__init__()
-        self.L = nn.Parameter(torch.randn(size, rank) * 0.1)
-        self.R = nn.Parameter(torch.randn(size, rank) * 0.1)
+        self.L = nn.Parameter(torch.randn(m, k) * 0.1)  # m x k
+        self.R = nn.Parameter(torch.randn(k, n) * 0.1)  # k x n
 
     def forward(self):
-        return self.L @ self.R.T
+        return self.L @ self.R  # m x n
 
 
 class MatrixFactorizationExperiment:
-    def __init__(self, device, batch_size, matrix_size=64, rank=8, **_):
+    def __init__(self, device, batch_size, matrix_rows=64, matrix_cols=64, rank=8, **_):
         self.device = device
-        self.matrix_size = matrix_size
+        self.matrix_rows = matrix_rows
+        self.matrix_cols = matrix_cols
         self.rank = rank
-        left = torch.randn(matrix_size, rank, device=device)
-        right = torch.randn(matrix_size, rank, device=device)
-        self._target = left @ right.T
+        L = torch.randn(matrix_rows, rank, device=device)   # m x k
+        R = torch.randn(rank, matrix_cols, device=device)   # k x n
+        self._target = L @ R                                 # m x n
 
     def build_model(self):
-        return _MFModel(self.matrix_size, self.rank).to(self.device)
+        return _MFModel(self.matrix_rows, self.rank, self.matrix_cols).to(self.device)
 
     def next_batch(self):
         return self._target

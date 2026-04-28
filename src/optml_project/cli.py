@@ -71,44 +71,42 @@ def _plot(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Optimizer convergence benchmarks.")
 
-    # --- experiment ---
-    parser.add_argument("--experiment", choices=sorted(EXPERIMENTS), default="linear_regression")
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
-    parser.add_argument("--steps", type=int, default=300)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--log-every", type=int, default=25)
-    parser.add_argument("--feature-dim", type=int, default=32)
-    parser.add_argument("--samples", type=int, default=2048)
-    parser.add_argument("--matrix-size", type=int, default=64)
-    parser.add_argument("--rank", type=int, default=8)
+    exp = parser.add_argument_group("experiment")
+    exp.add_argument("--experiment", choices=sorted(EXPERIMENTS), default="linear_regression")
+    exp.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
+    exp.add_argument("--steps", type=int, default=300)
+    exp.add_argument("--batch-size", type=int, default=128)
+    exp.add_argument("--seed", type=int, default=0)
+    exp.add_argument("--log-every", type=int, default=25)
+    exp.add_argument("--samples", type=int, default=2048, help="Samples for linear regression.")
+    exp.add_argument("--feature-dim", type=int, default=32, help="Feature dim for linear regression.")
+    exp.add_argument("--matrix-rows", type=int, default=64, help="m: rows of A (matrix factorization).")
+    exp.add_argument("--matrix-cols", type=int, default=64, help="n: cols of A (matrix factorization).")
+    exp.add_argument("--rank", type=int, default=8, help="k: inner rank (matrix factorization).")
 
-    # --- optimizer ---
-    parser.add_argument("--optimizer", choices=sorted(OPTIMIZERS), default="adamw")
-    parser.add_argument("--lr", type=float, default=1e-2)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    # shared
-    parser.add_argument("--momentum", type=float, default=None, help="SGD / Muon momentum.")
-    # Adam / AdamW
-    parser.add_argument("--beta1", type=float, default=None)
-    parser.add_argument("--beta2", type=float, default=None)
-    parser.add_argument("--eps", type=float, default=None)
-    # Muon-specific
-    parser.add_argument("--ns-steps", type=int, default=None, help="Newton-Schulz iterations (Muon).")
+    opt = parser.add_argument_group("optimizer")
+    opt.add_argument("--optimizer", choices=sorted(OPTIMIZERS), default="adamw")
+    opt.add_argument("--lr", type=float, default=1e-2)
+    opt.add_argument("--weight-decay", type=float, default=0.0)
+    opt.add_argument("--momentum", type=float, default=None, help="SGD / Muon.")
+    opt.add_argument("--beta1", type=float, default=None, help="Adam / AdamW.")
+    opt.add_argument("--beta2", type=float, default=None, help="Adam / AdamW.")
+    opt.add_argument("--eps", type=float, default=None, help="Adam / AdamW.")
+    opt.add_argument("--ns-steps", type=int, default=None, help="Newton-Schulz iterations (Muon).")
 
-    # --- plotting ---
-    parser.add_argument("--plot", action="store_true")
-    parser.add_argument("--log-scale", action="store_true", help="Log y-axis on convergence plot.")
-    parser.add_argument("--smooth", type=int, default=1, help="Rolling-mean window for plot smoothing.")
-    parser.add_argument("--save-plot", type=str, default=None, metavar="PATH")
+    plot = parser.add_argument_group("plotting")
+    plot.add_argument("--plot", action="store_true")
+    plot.add_argument("--log-scale", action="store_true", help="Log y-axis.")
+    plot.add_argument("--smooth", type=int, default=1, help="Rolling-mean window.")
+    plot.add_argument("--save-plot", type=str, default=None, metavar="PATH")
 
-    # --- modes ---
-    parser.add_argument("--compare-all", action="store_true", help="Run all optimizers, plot together.")
-    parser.add_argument("--sweep-lr", action="store_true", help="Sweep lr over a log-spaced grid.")
-    parser.add_argument("--compare-best-lr", action="store_true", help="Sweep lr per optimizer, plot each at its best lr.")
-    parser.add_argument("--lr-min", type=float, default=1e-4)
-    parser.add_argument("--lr-max", type=float, default=1.0)
-    parser.add_argument("--lr-n", type=int, default=8)
+    modes = parser.add_argument_group("modes")
+    modes.add_argument("--compare-all", action="store_true", help="Run all optimizers at --lr, plot together.")
+    modes.add_argument("--sweep-lr", action="store_true", help="Sweep lr over a log-spaced grid.")
+    modes.add_argument("--compare-best-lr", action="store_true", help="Sweep lr per optimizer, plot each at its best lr.")
+    modes.add_argument("--lr-min", type=float, default=1e-4)
+    modes.add_argument("--lr-max", type=float, default=1.0)
+    modes.add_argument("--lr-n", type=int, default=8)
 
     args = parser.parse_args()
 
@@ -151,7 +149,8 @@ def main() -> None:
         log_every=args.log_every,
         feature_dim=args.feature_dim,
         samples=args.samples,
-        matrix_size=args.matrix_size,
+        matrix_rows=args.matrix_rows,
+        matrix_cols=args.matrix_cols,
         rank=args.rank,
         opt_kwargs=opt_kwargs,
     )
