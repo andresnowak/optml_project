@@ -83,7 +83,7 @@ class SpecMuon(torch.optim.Optimizer):
                     raise ValueError(f"SpecMuon only supports 2-D parameter gradients for SVD-based updates, but got shape {G.shape} for parameter with shape {p.shape}. Consider using a different optimizer for this parameter.")
 
                 # ── Step 4-5: normalise gradient ──────────────────────────────
-                G_hat = G2 / (torch.linalg.norm(G2) + eps) # Frobenius norm normalization with stability eps (to have singular values [0, 1])
+                G_hat = G / (torch.linalg.norm(G) + eps) # Frobenius norm normalization with stability eps (to have singular values [0, 1])
 
                 # ── Step 6: full SVD of normalised gradient ───────────────────
                 U, S, Vh = torch.linalg.svd(G_hat, full_matrices=False)
@@ -93,10 +93,10 @@ class SpecMuon(torch.optim.Optimizer):
                 state = self.state[p]
                 if not state:
                     k_act = min(k, S.shape[0]) # actual number of top singular directions to treat with SAV (can't be more than rank)
-                    state["momentum_buffer"] = torch.zeros_like(G2)
+                    state["momentum_buffer"] = torch.zeros_like(G)
                     # r initialised to √L₀ for each of the k directions
                     state["r"] = torch.full(
-                        (k_act,), sqrt_loss, dtype=G2.dtype, device=G2.device
+                        (k_act,), sqrt_loss, dtype=G.dtype, device=G.device
                     )
                     state["k_act"] = k_act
 
@@ -104,7 +104,7 @@ class SpecMuon(torch.optim.Optimizer):
                 r: torch.Tensor = state["r"]
                 k_act: int = state["k_act"]
 
-                O = torch.zeros_like(G2) # (rows, cols)
+                O = torch.zeros_like(G) # (rows, cols)
 
                 # ── Steps 10-21: SAV (Scalar Auxiliary Variable) update for top-k directions ──────────────
                 # for j in range(k_act):
@@ -163,7 +163,7 @@ class SpecMuon(torch.optim.Optimizer):
                     O.addmm_(U_rest, Vh_rest)
 
                 # ── Steps 28-29: momentum + parameter update ──────────────────
-                lr_scale = max(G2.shape) ** 0.5 if adjust_lr_fn == "shape_scaling" else 1.0
+                lr_scale = max(G.shape) ** 0.5 if adjust_lr_fn == "shape_scaling" else 1.0
                 B_new = mu * B + O
                 state["momentum_buffer"] = B_new
                 p.add_(B_new.reshape(orig_shape), alpha=-lr * lr_scale)
