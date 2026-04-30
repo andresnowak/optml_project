@@ -75,7 +75,10 @@ def main() -> None:
     if args.steps < 1:
         parser.error("--steps must be at least 1.")
 
+    # set seed
     torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
     device = torch.device(
         "cuda" if torch.cuda.is_available() else
         "mps" if torch.backends.mps.is_available() else

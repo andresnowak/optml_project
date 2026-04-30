@@ -71,7 +71,8 @@ class SpecMuon(torch.optim.Optimizer):
                 G = p.grad
                 orig_shape = G.shape
 
-                # Reshape to 2-D for SVD: (rows, cols)
+                # Reshape to 2-D for SVD: (rows, cols)'
+                # Things that aren't matrices should be treated by Adam, only matrices get SpecMuon update.
                 if G.dim() == 0:
                     continue  # scalar param — skip
                 elif G.dim() == 1:
@@ -80,7 +81,7 @@ class SpecMuon(torch.optim.Optimizer):
                     G2 = G.reshape(G.shape[0], -1)  # (m, n*…)
 
                 # ── Step 4-5: normalise gradient ──────────────────────────────
-                G_hat = G2 / (torch.linalg.norm(G2) + eps)
+                G_hat = G2 / (torch.linalg.norm(G2) + eps) # Frobenius norm normalization with stability eps (to have singular values [0, 1])
 
                 # ── Step 6: full SVD of normalised gradient ───────────────────
                 U, S, Vh = torch.linalg.svd(G_hat, full_matrices=False)
@@ -89,7 +90,7 @@ class SpecMuon(torch.optim.Optimizer):
                 # ── Initialise per-parameter state ────────────────────────────
                 state = self.state[p]
                 if not state:
-                    k_act = min(k, S.shape[0])
+                    k_act = min(k, S.shape[0]) # actual number of top singular directions to treat with SAV (can't be more than rank)
                     state["momentum_buffer"] = torch.zeros_like(G2)
                     # r initialised to √L₀ for each of the k directions
                     state["r"] = torch.full(
@@ -104,18 +105,18 @@ class SpecMuon(torch.optim.Optimizer):
                 O = torch.zeros_like(G2)
                 r_next = r.clone()
 
-                # ── Steps 10-21: SAV update for top-k directions ──────────────
+                # ── Steps 10-21: SAV (Scalar Auxiliary Variable) update for top-k directions ──────────────
                 for j in range(k_act):
                     u_j = U[:, j]        # (m,)
                     s_j = S[j].item()
                     v_j = Vh[j, :]       # (n,)
                     r_prev_j = r[j].item()
 
-                    eta_prime_j = lr / (s_j + eps)
+                    eta_prime_j = lr / (s_j + eps) # inverse scaling by singular value (with stability eps)
                     # ‖d_g‖_F = s_j / (√L + ε)  because ‖u v^T‖_F = 1
                     d_g_norm = s_j / (sqrt_loss + eps)
 
-                    r_new_j = r_prev_j / (1.0 + 0.5 * eta_prime_j * d_g_norm)
+                    r_new_j = r_prev_j / (1.0 + 0.5 * eta_prime_j * d_g_norm) # update rule for SAV variable r_j
 
                     # O += (r_new_j / (√L + ε)) · u_j v_j^T
                     scale = r_new_j / (sqrt_loss + eps)
@@ -126,12 +127,12 @@ class SpecMuon(torch.optim.Optimizer):
                         (1.0 - xi) * r_new_j ** 2
                         + xi * r_prev_j ** 2
                         + (1.0 - xi) * (r_new_j - r_prev_j) ** 2
-                    )
+                    ) # smoothed energy proxy T_j for the j-th direction, combining current and previous r_j values with smoothing factor xi
                     sqrt_T = max(T, 0.0) ** 0.5
                     denom = sqrt_loss - r_new_j + eps
                     chi = float(torch.clamp(
                         torch.tensor((sqrt_loss - sqrt_T) / denom), 0.0, 1.0
-                    ))
+                    )) # blending factor χ_j (chi distribution) for smoothing the update of r_j, based on how close the energy proxy T_j is to the current loss sqrt_loss
                     r_next[j] = chi * r_new_j + (1.0 - chi) * sqrt_loss
 
                 state["r"] = r_next
@@ -141,8 +142,9 @@ class SpecMuon(torch.optim.Optimizer):
                     U_rest = U[:, k_act:]    # (m, rest)
                     S_rest = S[k_act:]       # (rest,)
                     Vh_rest = Vh[k_act:, :]  # (rest, n)
-                    # O += U_rest @ diag(S_rest) @ Vh_rest
-                    O.addmm_(U_rest * S_rest.unsqueeze(0), Vh_rest)
+                    # O += U_rest @ diag(S_rest) @ Vh_rest, ones in the diagonal as in Muon
+                    # O.addmm_(U_rest * S_rest.unsqueeze(0), Vh_rest)
+                    O.addmm_(U_rest, Vh_rest)
 
                 # ── Steps 28-29: momentum + parameter update ──────────────────
                 B_new = mu * B + O
