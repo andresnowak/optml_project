@@ -79,12 +79,8 @@ class SpecMuon(torch.optim.Optimizer):
 
                 # Reshape to 2-D for SVD: (rows, cols)'
                 # Things that aren't matrices should be treated by Adam, only matrices get SpecMuon update.
-                if G.dim() == 0:
-                    continue  # scalar param — skip
-                elif G.dim() == 1:
-                    G2 = G.unsqueeze(1)           # (n, 1)
-                else:
-                    G2 = G.reshape(G.shape[0], -1)  # (m, n*…)
+                if G.dim() != 2:
+                    raise ValueError(f"SpecMuon only supports 2-D parameter gradients for SVD-based updates, but got shape {G.shape} for parameter with shape {p.shape}. Consider using a different optimizer for this parameter.")
 
                 # ── Step 4-5: normalise gradient ──────────────────────────────
                 G_hat = G2 / (torch.linalg.norm(G2) + eps) # Frobenius norm normalization with stability eps (to have singular values [0, 1])
