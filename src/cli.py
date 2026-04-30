@@ -21,8 +21,9 @@ def main() -> None:
     exp.add_argument("--batch-size", type=int, default=128)
     exp.add_argument("--seed", type=int, default=0)
     exp.add_argument("--log-every", type=int, default=25)
-    exp.add_argument("--samples", type=int, default=2048, help="Samples for linear regression.")
-    exp.add_argument("--feature-dim", type=int, default=32, help="Feature dim for linear regression.")
+    exp.add_argument("--samples", type=int, default=2048, help="N: number of data points (linear regression).")
+    exp.add_argument("--feature-dim", type=int, default=32, help="n: input dimension / cols of W (linear regression).")
+    exp.add_argument("--output-dim", type=int, default=16, help="m: output dimension / rows of W (linear regression).")
     exp.add_argument("--matrix-rows", type=int, default=64, help="m: rows of A (matrix factorization).")
     exp.add_argument("--matrix-cols", type=int, default=64, help="n: cols of A (matrix factorization).")
     exp.add_argument("--rank", type=int, default=8, help="k: inner rank (matrix factorization).")
@@ -107,6 +108,7 @@ def main() -> None:
         batch_size=args.batch_size,
         log_every=args.log_every,
         feature_dim=args.feature_dim,
+        output_dim=args.output_dim,
         samples=args.samples,
         matrix_rows=args.matrix_rows,
         matrix_cols=args.matrix_cols,
@@ -135,7 +137,7 @@ def main() -> None:
             best_losses, best_lr = None, None
             for lr in lrs:
                 losses = train(optimizer_name=name, lr=lr, **common)
-                if best_losses is None or losses[-1] < best_losses[-1]:
+                if best_losses is None or min(losses) < min(best_losses):
                     best_losses, best_lr = losses, lr
             print(f"   → best lr={best_lr:.2e}  final loss={best_losses[-1]:.6f}")
             train(optimizer_name=name, lr=best_lr, logger=logger,

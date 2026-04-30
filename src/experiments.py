@@ -2,35 +2,45 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+import metalcore
+
+metalcore.enable_pytorch_overrides(activations=False, embedding_bag=False, normalization=False, softmax=False, optimizers=False, linalg=True)
+
+
+class _LinRegModel(nn.Module):
+    def __init__(self, m, n, device):
+        super().__init__()
+        self.W = nn.Parameter(torch.randn(m, n, device=device) * 0.01)  # (m, n)
+
+    def forward(self, X):
+        return self.W @ X  # (m, N)
 
 
 class LinearRegressionExperiment:
-    def __init__(self, device, batch_size, feature_dim=32, samples=2048, **_):
+    """min_W 1/2 ||WX - Y||_F^2  with W∈R^{m×n}, X∈R^{n×N}, Y∈R^{m×N}.
+
+    Gradient: ∇f(W) = (WX - Y) X^T
+    """
+
+    def __init__(self, device, batch_size, feature_dim=32, output_dim=16, samples=2048, **_):
         self.device = device
-        self.batch_size = batch_size
-        self.feature_dim = feature_dim
-        self.samples = samples
-        self._cursor = 0
-        self._inputs = torch.randn(samples, feature_dim, device=device)
-        w = torch.randn(feature_dim, 1, device=device)
-        self._targets = self._inputs @ w + 0.05 * torch.randn(samples, 1, device=device)
+        self.feature_dim = feature_dim   # n
+        self.output_dim = output_dim     # m
+        self.samples = samples           # N
+        # X: (n, N),  Y: (m, N)
+        W_true = torch.randn(output_dim, feature_dim, device=device)
+        self._X = torch.randn(feature_dim, samples, device=device)
+        self._Y = W_true @ self._X + 0.05 * torch.randn(output_dim, samples, device=device)
 
     def build_model(self):
-        return nn.Linear(self.feature_dim, 1, bias=False).to(self.device)
+        return _LinRegModel(self.output_dim, self.feature_dim, self.device)
 
     def next_batch(self):
-        s, e = self._cursor, self._cursor + self.batch_size
-        if e <= self.samples:
-            x, y = self._inputs[s:e], self._targets[s:e]
-        else:
-            x = torch.cat([self._inputs[s:], self._inputs[:e - self.samples]])
-            y = torch.cat([self._targets[s:], self._targets[:e - self.samples]])
-        self._cursor = e % self.samples
-        return x, y
+        return self._X, self._Y
 
     def loss(self, model, batch):
-        x, y = batch
-        return ((model(x) - y) ** 2).mean()
+        X, Y = batch
+        return 0.5 * ((model(X) - Y) ** 2).mean()
 
 
 class _MFModel(nn.Module):
