@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 import torch
 import wandb
 
-from optml_project.matplotlib_backend import ScalarPlot, SVDPlot
+from src.matplotlib_backend import ScalarPlot, SVDPlot
 
 
 class BaseLogger(ABC):

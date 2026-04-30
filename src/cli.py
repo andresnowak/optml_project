@@ -5,10 +5,10 @@ import argparse
 import numpy as np
 import torch
 
-from optml_project.experiments import EXPERIMENTS
-from optml_project.logger import make_logger
-from optml_project.optimizers import OPTIMIZERS
-from optml_project.training import train
+from src.experiments import EXPERIMENTS
+from src.logger import make_logger
+from src.optimizers import OPTIMIZERS
+from src.training import train
 
 
 def main() -> None:

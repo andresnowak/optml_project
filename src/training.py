@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import torch
 
-from optml_project.experiments import EXPERIMENTS
-from optml_project.logger import BaseLogger
-from optml_project.optimizers import SpecMuon, build_optimizer
+from src.experiments import EXPERIMENTS
+from src.logger import BaseLogger
+from src.optimizers import SpecMuon, build_optimizer
 
 
 def train(

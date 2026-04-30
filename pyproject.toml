@@ -11,8 +11,5 @@ dependencies = [
   "jupyter>=1.1.1",
 ]
 
-[project.scripts]
-optml-bench = "optml_project.cli:main"
-
 [tool.uv]
-package = true
+package = false
