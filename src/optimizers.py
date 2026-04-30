@@ -3,6 +3,9 @@ from __future__ import annotations
 from torch.optim import Adam, AdamW, SGD
 from torch.optim import Muon as _TorchMuon
 import torch
+import metalcore
+
+metalcore.enable_pytorch_overrides(activations=False, embedding_bag=False, normalization=False, softmax=False, optimizers=False, linalg=True)
 
 
 class Muon(_TorchMuon):
@@ -102,40 +105,54 @@ class SpecMuon(torch.optim.Optimizer):
                 r: torch.Tensor = state["r"]
                 k_act: int = state["k_act"]
 
-                O = torch.zeros_like(G2)
-                r_next = r.clone()
+                O = torch.zeros_like(G2) # (rows, cols)
 
                 # ── Steps 10-21: SAV (Scalar Auxiliary Variable) update for top-k directions ──────────────
-                for j in range(k_act):
-                    u_j = U[:, j]        # (m,)
-                    s_j = S[j].item()
-                    v_j = Vh[j, :]       # (n,)
-                    r_prev_j = r[j].item()
+                # for j in range(k_act):
+                #     u_j = U[:, j]        # (m,)
+                #     s_j = S[j].item()
+                #     v_j = Vh[j, :]       # (n,)
+                #     r_prev_j = r[j].item()
 
-                    eta_prime_j = lr / (s_j + eps) # inverse scaling by singular value (with stability eps)
-                    # ‖d_g‖_F = s_j / (√L + ε)  because ‖u v^T‖_F = 1
-                    d_g_norm = s_j / (sqrt_loss + eps)
+                #     eta_prime_j = lr / (s_j + eps) # inverse scaling by singular value (with stability eps)
+                #     # ‖d_g‖_F = s_j / (√L + ε)  because ‖u v^T‖_F = 1
+                #     d_g_norm = s_j / (sqrt_loss + eps)
 
-                    r_new_j = r_prev_j / (1.0 + 0.5 * eta_prime_j * d_g_norm) # update rule for SAV variable r_j
+                #     r_new_j = r_prev_j / (1.0 + 0.5 * eta_prime_j * d_g_norm) # update rule for SAV variable r_j
 
-                    # O += (r_new_j / (√L + ε)) · u_j v_j^T
-                    scale = r_new_j / (sqrt_loss + eps)
-                    O.addmm_(u_j.unsqueeze(1), v_j.unsqueeze(0), alpha=scale)
+                #     # O += (r_new_j / (√L + ε)) · u_j v_j^T
+                #     scale = r_new_j / (sqrt_loss + eps)
+                #     O.addmm_(u_j.unsqueeze(1), v_j.unsqueeze(0), alpha=scale)
 
-                    # SAV state update
-                    T = (
-                        (1.0 - xi) * r_new_j ** 2
-                        + xi * r_prev_j ** 2
-                        + (1.0 - xi) * (r_new_j - r_prev_j) ** 2
-                    ) # smoothed energy proxy T_j for the j-th direction, combining current and previous r_j values with smoothing factor xi
-                    sqrt_T = max(T, 0.0) ** 0.5
-                    denom = sqrt_loss - r_new_j + eps
-                    chi = float(torch.clamp(
-                        torch.tensor((sqrt_loss - sqrt_T) / denom), 0.0, 1.0
-                    )) # blending factor χ_j (chi distribution) for smoothing the update of r_j, based on how close the energy proxy T_j is to the current loss sqrt_loss
-                    r_next[j] = chi * r_new_j + (1.0 - chi) * sqrt_loss
+                #     # SAV state update
+                #     T = (
+                #         (1.0 - xi) * r_new_j ** 2
+                #         + xi * r_prev_j ** 2
+                #         + (1.0 - xi) * (r_new_j - r_prev_j) ** 2
+                #     ) # smoothed energy proxy T_j for the j-th direction, combining current and previous r_j values with smoothing factor xi
+                #     sqrt_T = max(T, 0.0) ** 0.5
+                #     denom = sqrt_loss - r_new_j + eps
+                #     chi = float(torch.clamp(
+                #         torch.tensor((sqrt_loss - sqrt_T) / denom), 0.0, 1.0
+                #     )) # blending factor χ_j (chi distribution) for smoothing the update of r_j, based on how close the energy proxy T_j is to the current loss sqrt_loss
+                #     r_next[j] = chi * r_new_j + (1.0 - chi) * sqrt_loss
 
-                state["r"] = r_next
+                s_k = S[:k_act]                                           # (k_act,)
+                eta_prime = lr / (s_k + eps)                              # inverse scaling by singular value
+                d_g_norm = s_k / (sqrt_loss + eps)                        # ‖d_g‖_F per direction
+                r_new = r / (1.0 + 0.5 * eta_prime * d_g_norm)           # SAV variable update
+
+                scale = r_new / (sqrt_loss + eps)
+                O.addmm_(U[:, :k_act] * scale.unsqueeze(0), Vh[:k_act, :])  # Σ_j scale_j * u_j ⊗ v_j
+
+                # SAV state update
+                T = ((1.0 - xi) * r_new ** 2
+                     + xi * r ** 2
+                     + (1.0 - xi) * (r_new - r) ** 2).clamp(min=0.0)    # smoothed energy proxy
+                sqrt_T = T.sqrt()
+                denom = sqrt_loss - r_new + eps
+                chi = ((sqrt_loss - sqrt_T) / denom).clamp(0.0, 1.0)     # blending factor χ_j
+                state["r"] = chi * r_new + (1.0 - chi) * sqrt_loss
 
                 # ── Steps 24-25: standard Muon update for remaining directions ─
                 if k_act < S.shape[0]:
