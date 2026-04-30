@@ -6,66 +6,9 @@ import numpy as np
 import torch
 
 from optml_project.experiments import EXPERIMENTS
+from optml_project.logger import make_logger
 from optml_project.optimizers import OPTIMIZERS
 from optml_project.training import train
-
-
-def _plot(
-    losses_by_label: dict[str, list[float]],
-    title: str,
-    log_scale: bool = False,
-    smooth: int = 1,
-    save_path: str | None = None,
-) -> None:
-    import matplotlib.pyplot as plt
-
-    # Sort by final loss so the legend reads best → worst
-    sorted_items = sorted(losses_by_label.items(), key=lambda kv: kv[1][-1])
-    colors = plt.cm.tab10.colors
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-
-    for i, (label, losses) in enumerate(sorted_items):
-        color = colors[i % len(colors)]
-        steps = np.arange(1, len(losses) + 1)
-
-        if smooth > 1:
-            # show raw trace faintly, overlay smoothed line
-            ax.plot(steps, losses, color=color, alpha=0.15, linewidth=0.8)
-            kernel = np.ones(smooth) / smooth
-            smoothed = np.convolve(losses, kernel, mode="valid")
-            x_sm = steps[smooth - 1:]
-            ax.plot(x_sm, smoothed, label=label, color=color, linewidth=2)
-            x_end, y_end = x_sm[-1], smoothed[-1]
-        else:
-            ax.plot(steps, losses, label=label, color=color, linewidth=2)
-            x_end, y_end = steps[-1], losses[-1]
-
-        ax.annotate(
-            f"{y_end:.4f}",
-            xy=(x_end, y_end),
-            xytext=(6, 0),
-            textcoords="offset points",
-            va="center",
-            color=color,
-            fontsize=8,
-            fontweight="bold",
-        )
-
-    if log_scale:
-        ax.set_yscale("log")
-
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Loss (log)" if log_scale else "Loss")
-    ax.set_title(title)
-    ax.legend(loc="upper right")
-    ax.grid(True, alpha=0.3, linestyle="--")
-    fig.tight_layout()
-
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Plot saved to {save_path}")
-    plt.show()
 
 
 def main() -> None:
@@ -93,25 +36,35 @@ def main() -> None:
     opt.add_argument("--beta2", type=float, default=None, help="Adam / AdamW.")
     opt.add_argument("--eps", type=float, default=None, help="Adam / AdamW.")
     opt.add_argument("--ns-steps", type=int, default=None, help="Newton-Schulz iterations (Muon).")
+    opt.add_argument("--top-k", type=int, default=None, help="Top-k SAV singular directions (SpecMuon).")
+    opt.add_argument("--sav-smooth", type=float, default=None, help="SAV smoothing factor ξ (SpecMuon).")
 
-    plot = parser.add_argument_group("plotting")
-    plot.add_argument("--plot", action="store_true")
-    plot.add_argument("--log-scale", action="store_true", help="Log y-axis.")
-    plot.add_argument("--smooth", type=int, default=1, help="Rolling-mean window.")
-    plot.add_argument("--save-plot", type=str, default=None, metavar="PATH")
+    log_group = parser.add_argument_group("logging")
+    log_group.add_argument("--backend", choices=("matplotlib", "wandb"), default=None,
+                           help="Logging backend. Omit for console-only output.")
+    log_group.add_argument("--log-grad-svd", action="store_true",
+                           help="Log singular values of parameter gradients.")
+    log_group.add_argument("--svd-every", type=int, default=None,
+                           help="Log SVD every N steps (default: same as --log-every).")
+    log_group.add_argument("--svd-top-k", type=int, default=None,
+                           help="Only show top-k singular values. Default: all.")
+    log_group.add_argument("--log-scale", action="store_true", help="Log y-axis (matplotlib).")
+    log_group.add_argument("--smooth", type=int, default=1, help="Rolling-mean window (matplotlib).")
+    log_group.add_argument("--save-plot", type=str, default=None, metavar="PATH")
+    log_group.add_argument("--wandb-project", type=str, default="optml-bench")
 
     modes = parser.add_argument_group("modes")
-    modes.add_argument("--compare-all", action="store_true", help="Run all optimizers at --lr, plot together.")
+    modes.add_argument("--compare-all", action="store_true", help="Run all optimizers at --lr.")
     modes.add_argument("--sweep-lr", action="store_true", help="Sweep lr over a log-spaced grid.")
-    modes.add_argument("--compare-best-lr", action="store_true", help="Sweep lr per optimizer, plot each at its best lr.")
+    modes.add_argument("--compare-best-lr", action="store_true", help="Sweep lr per optimizer, compare at best lr.")
     modes.add_argument("--lr-min", type=float, default=1e-4)
     modes.add_argument("--lr-max", type=float, default=1.0)
     modes.add_argument("--lr-n", type=int, default=8)
 
     args = parser.parse_args()
 
-    modes = [args.sweep_lr, args.compare_all, args.compare_best_lr]
-    if sum(modes) > 1:
+    active_modes = [args.sweep_lr, args.compare_all, args.compare_best_lr]
+    if sum(active_modes) > 1:
         parser.error("--sweep-lr, --compare-all, and --compare-best-lr are mutually exclusive.")
     if args.lr_min >= args.lr_max:
         parser.error("--lr-min must be less than --lr-max.")
@@ -129,12 +82,15 @@ def main() -> None:
         "cpu"
     ) if args.device == "auto" else torch.device(args.device)
 
-    # build optimizer extra kwargs
     opt_kwargs: dict = {}
     if args.momentum is not None:
         opt_kwargs["momentum"] = args.momentum
     if args.ns_steps is not None:
         opt_kwargs["ns_steps"] = args.ns_steps
+    if args.top_k is not None:
+        opt_kwargs["top_k"] = args.top_k
+    if args.sav_smooth is not None:
+        opt_kwargs["sav_smooth"] = args.sav_smooth
     if args.beta1 is not None or args.beta2 is not None:
         opt_kwargs["betas"] = (args.beta1 or 0.9, args.beta2 or 0.999)
     if args.eps is not None:
@@ -153,20 +109,24 @@ def main() -> None:
         matrix_cols=args.matrix_cols,
         rank=args.rank,
         opt_kwargs=opt_kwargs,
+        log_grad_svd=args.log_grad_svd,
+        svd_every=args.svd_every,
     )
 
-    plot_kwargs = dict(log_scale=args.log_scale, smooth=args.smooth, save_path=args.save_plot)
-
+    logger_kwargs = dict(log_scale=args.log_scale, smooth=args.smooth,
+                         save_path=args.save_plot, wandb_project=args.wandb_project,
+                         config=vars(args), svd_top_k=args.svd_top_k)
     lrs = np.logspace(np.log10(args.lr_min), np.log10(args.lr_max), args.lr_n)
 
     if args.sweep_lr:
-        losses_by_lr = {}
+        logger = make_logger(args.backend, f"LR sweep — {args.experiment} / {args.optimizer}", **logger_kwargs)
         for lr in lrs:
-            losses_by_lr[f"lr={lr:.2e}"] = train(optimizer_name=args.optimizer, lr=lr, **common)
-        _plot(losses_by_lr, f"LR sweep — {args.experiment} / {args.optimizer}", **plot_kwargs)
+            train(optimizer_name=args.optimizer, lr=lr, logger=logger, run_name=f"lr={lr:.2e}", **common)
+        if logger:
+            logger.finish()
 
     elif args.compare_best_lr:
-        best_by_opt = {}
+        logger = make_logger(args.backend, f"Best-lr comparison — {args.experiment}", **logger_kwargs)
         for name in sorted(OPTIMIZERS):
             print(f"\n── sweeping {name} ──")
             best_losses, best_lr = None, None
@@ -174,21 +134,24 @@ def main() -> None:
                 losses = train(optimizer_name=name, lr=lr, **common)
                 if best_losses is None or losses[-1] < best_losses[-1]:
                     best_losses, best_lr = losses, lr
-            label = f"{name}  (lr={best_lr:.2e})"
-            best_by_opt[label] = best_losses
             print(f"   → best lr={best_lr:.2e}  final loss={best_losses[-1]:.6f}")
-        _plot(best_by_opt, f"Best-lr comparison — {args.experiment}", **plot_kwargs)
+            train(optimizer_name=name, lr=best_lr, logger=logger,
+                  run_name=f"{name} lr={best_lr:.2e}", **common)
+        if logger:
+            logger.finish()
 
     elif args.compare_all:
-        losses_by_opt = {}
+        logger = make_logger(args.backend, f"Optimizer comparison — {args.experiment}", **logger_kwargs)
         for name in sorted(OPTIMIZERS):
-            losses_by_opt[name] = train(optimizer_name=name, lr=args.lr, **common)
-        _plot(losses_by_opt, f"Optimizer comparison — {args.experiment}", **plot_kwargs)
+            train(optimizer_name=name, lr=args.lr, logger=logger, run_name=name, **common)
+        if logger:
+            logger.finish()
 
     else:
-        losses = train(optimizer_name=args.optimizer, lr=args.lr, **common)
-        if args.plot:
-            _plot({args.optimizer: losses}, f"{args.experiment} / {args.optimizer}", **plot_kwargs)
+        logger = make_logger(args.backend, f"{args.experiment} / {args.optimizer}", **logger_kwargs)
+        train(optimizer_name=args.optimizer, lr=args.lr, logger=logger, **common)
+        if logger:
+            logger.finish()
 
 
 if __name__ == "__main__":

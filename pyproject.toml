@@ -3,10 +3,12 @@ name = "optml-project"
 version = "0.1.0"
 description = "Optimizer convergence benchmarks for small PyTorch problems."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
   "torch>=2.3",
   "matplotlib",
+  "wandb>=0.26.1",
+  "jupyter>=1.1.1",
 ]
 
 [project.scripts]
