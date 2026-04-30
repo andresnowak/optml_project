@@ -9,7 +9,7 @@ metalcore.enable_pytorch_overrides(activations=False, embedding_bag=False, norma
 
 
 class Muon(_TorchMuon):
-    """Our Muon subclass — adjust_lr shape-scaling functions will be added here."""
+    """Our Muon subclass — adjust_lr_fn shape-scaling functions will be added here."""
     pass
 
 
@@ -22,12 +22,13 @@ class SpecMuon(torch.optim.Optimizer):
     Momentum is then applied on top of the combined update direction.
 
     Args:
-        params:     parameters to optimize
-        lr:         base learning rate η
-        momentum:   Nesterov-style momentum coefficient μ  (default 0.95)
-        top_k:      number of singular directions to treat with SAV (default 5)
-        sav_smooth: SAV smoothing factor ξ ∈ [0, 1]  (default 0.1)
-        eps:        numerical stability ε  (default 1e-8)
+        params:         parameters to optimize
+        lr:             base learning rate η
+        momentum:       Nesterov-style momentum coefficient μ  (default 0.95)
+        top_k:          number of singular directions to treat with SAV (default 5)
+        sav_smooth:     SAV smoothing factor ξ ∈ [0, 1]  (default 0.1)
+        eps:            numerical stability ε  (default 1e-8)
+        adjust_lr_fn:      lr scaling mode. None = no scaling, "shape_scaling" = sqrt(max(m, n)).
     """
 
     def __init__(
@@ -38,8 +39,9 @@ class SpecMuon(torch.optim.Optimizer):
         top_k: int = 5,
         sav_smooth: float = 0.1,
         eps: float = 1e-8,
+        adjust_lr_fn: str | None = None,
     ):
-        defaults = dict(lr=lr, momentum=momentum, top_k=top_k, sav_smooth=sav_smooth, eps=eps)
+        defaults = dict(lr=lr, momentum=momentum, top_k=top_k, sav_smooth=sav_smooth, eps=eps, adjust_lr_fn=adjust_lr_fn)
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -66,6 +68,7 @@ class SpecMuon(torch.optim.Optimizer):
             k: int = group["top_k"]
             xi: float = group["sav_smooth"]
             eps: float = group["eps"]
+            adjust_lr_fn: str | None = group["adjust_lr_fn"]
 
             for p in group["params"]:
                 if p.grad is None:
@@ -164,9 +167,10 @@ class SpecMuon(torch.optim.Optimizer):
                     O.addmm_(U_rest, Vh_rest)
 
                 # ── Steps 28-29: momentum + parameter update ──────────────────
+                lr_scale = max(G2.shape) ** 0.5 if adjust_lr_fn == "shape_scaling" else 1.0
                 B_new = mu * B + O
                 state["momentum_buffer"] = B_new
-                p.add_(B_new.reshape(orig_shape), alpha=-lr)
+                p.add_(B_new.reshape(orig_shape), alpha=-lr * lr_scale)
 
         return loss
 
@@ -197,7 +201,7 @@ def build_optimizer(name, params, lr, weight_decay, **kwargs):
         return OPTIMIZERS[name](params, lr=lr, weight_decay=weight_decay, **kw)
     if name == "specmuon":
         kw = {}
-        for key in ("momentum", "top_k", "sav_smooth", "eps"):
+        for key in ("momentum", "top_k", "sav_smooth", "eps", "adjust_lr_fn_fn"):
             if kwargs.get(key) is not None:
                 kw[key] = kwargs[key]
         return SpecMuon(params, lr=lr, **kw)

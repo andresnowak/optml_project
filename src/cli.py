@@ -39,6 +39,7 @@ def main() -> None:
     opt.add_argument("--ns-steps", type=int, default=None, help="Newton-Schulz iterations (Muon).")
     opt.add_argument("--top-k", type=int, default=None, help="Top-k SAV singular directions (SpecMuon).")
     opt.add_argument("--sav-smooth", type=float, default=None, help="SAV smoothing factor ξ (SpecMuon).")
+    opt.add_argument("--adjust-lr-fn", choices=("shape_scaling",), default=None, help="LR scaling mode (SpecMuon).")
 
     log_group = parser.add_argument_group("logging")
     log_group.add_argument("--backend", choices=("matplotlib", "wandb"), default=None,
@@ -95,6 +96,8 @@ def main() -> None:
         opt_kwargs["top_k"] = args.top_k
     if args.sav_smooth is not None:
         opt_kwargs["sav_smooth"] = args.sav_smooth
+    if args.adjust_lr_fn is not None:
+        opt_kwargs["adjust_lr_fn"] = args.adjust_lr_fn
     if args.beta1 is not None or args.beta2 is not None:
         opt_kwargs["betas"] = (args.beta1 or 0.9, args.beta2 or 0.999)
     if args.eps is not None:
