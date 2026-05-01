@@ -27,12 +27,16 @@ def main() -> None:
     exp.add_argument("--matrix-rows", type=int, default=64, help="m: rows of A (matrix factorization).")
     exp.add_argument("--matrix-cols", type=int, default=64, help="n: cols of A (matrix factorization).")
     exp.add_argument("--rank", type=int, default=8, help="k: inner rank (matrix factorization).")
+    exp.add_argument("--block-size", type=int, default=128, help="Context length (shakespeare).")
+    exp.add_argument("--d-model", type=int, default=128, help="Model dimension (shakespeare).")
+    exp.add_argument("--n-heads", type=int, default=4, help="Number of attention heads (shakespeare).")
+    exp.add_argument("--n-layers", type=int, default=4, help="Number of transformer layers (shakespeare).")
 
     opt = parser.add_argument_group("optimizer")
     opt.add_argument("--optimizer", choices=sorted(OPTIMIZERS), default="adamw")
     opt.add_argument("--lr", type=float, default=1e-2)
     opt.add_argument("--weight-decay", type=float, default=0.0)
-    opt.add_argument("--momentum", type=float, default=None, help="SGD / Muon.")
+    opt.add_argument("--momentum", type=float, default=None, help="SGD / Muon / Specmuon.")
     opt.add_argument("--beta1", type=float, default=None, help="Adam / AdamW.")
     opt.add_argument("--beta2", type=float, default=None, help="Adam / AdamW.")
     opt.add_argument("--eps", type=float, default=None, help="Adam / AdamW.")
@@ -62,6 +66,8 @@ def main() -> None:
     modes.add_argument("--lr-min", type=float, default=1e-4)
     modes.add_argument("--lr-max", type=float, default=1.0)
     modes.add_argument("--lr-n", type=int, default=8)
+    modes.add_argument("--compare-rtol", type=float, default=0.01,
+                       help="Relative tolerance for best-lr tiebreak: runs within rtol of best loss prefer fewer steps.")
 
     args = parser.parse_args()
 
@@ -76,6 +82,21 @@ def main() -> None:
         parser.error("--smooth must be at least 1.")
     if args.steps < 1:
         parser.error("--steps must be at least 1.")
+
+    _specmuon_only = {"--top-k": args.top_k, "--sav-smooth": args.sav_smooth, "--adjust-lr-fn": args.adjust_lr_fn}
+    _muon_only = {"--ns-steps": args.ns_steps}
+    _muon_like = {"--momentum": args.momentum}
+
+    if not args.compare_all and not args.compare_best_lr:
+        for flag, val in _specmuon_only.items():
+            if val is not None and args.optimizer != "specmuon":
+                parser.error(f"{flag} can only be used with --optimizer specmuon.")
+        for flag, val in _muon_only.items():
+            if val is not None and args.optimizer not in ("muon", "specmuon"):
+                parser.error(f"{flag} can only be used with --optimizer muon or specmuon.")
+        for flag, val in _muon_like.items():
+            if val is not None and args.optimizer not in ("muon", "specmuon", "sgd"):
+                parser.error(f"{flag} can only be used with --optimizer muon, specmuon, or sgd.")
 
     # set seed
     torch.manual_seed(args.seed)
@@ -116,6 +137,10 @@ def main() -> None:
         matrix_rows=args.matrix_rows,
         matrix_cols=args.matrix_cols,
         rank=args.rank,
+        block_size=args.block_size,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        n_layers=args.n_layers,
         opt_kwargs=opt_kwargs,
         log_grad_svd=args.log_grad_svd,
         svd_every=args.svd_every,
@@ -140,7 +165,8 @@ def main() -> None:
             best_losses, best_lr = None, None
             for lr in lrs:
                 losses = train(optimizer_name=name, lr=lr, **common)
-                if best_losses is None or min(losses) < min(best_losses):
+                curr_min, best_min = min(losses), min(best_losses) if best_losses is not None else float("inf")
+                if best_losses is None or curr_min < best_min or (curr_min < best_min * (1 + args.compare_rtol) and np.argmin(losses) < np.argmin(best_losses)):
                     best_losses, best_lr = losses, lr
             print(f"   → best lr={best_lr:.2e}  final loss={best_losses[-1]:.6f}")
             train(optimizer_name=name, lr=best_lr, logger=logger,

@@ -1,10 +1,27 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
 
 from src.experiments import EXPERIMENTS
 from src.logger import BaseLogger
 from src.optimizers import SpecMuon, build_optimizer
+
+
+def _split_params(model: nn.Module):
+    """Return (matrix_params, other_params).
+
+    Embeddings and LayerNorm weights are excluded from matrix_params because
+    Muon/SpecMuon expect proper weight matrices; everything else goes to Adam.
+    """
+    matrix_params, other_params = [], []
+    for module in model.modules():
+        for p in module.parameters(recurse=False):
+            if isinstance(module, (nn.Embedding, nn.LayerNorm)) or p.ndim < 2:
+                other_params.append(p)
+            else:
+                matrix_params.append(p)
+    return matrix_params, other_params
 
 
 def train(
@@ -22,6 +39,10 @@ def train(
     matrix_rows: int,
     matrix_cols: int,
     rank: int,
+    block_size: int = 128,
+    d_model: int = 128,
+    n_heads: int = 4,
+    n_layers: int = 4,
     opt_kwargs: dict | None = None,
     logger: BaseLogger | None = None,
     run_name: str | None = None,
@@ -37,9 +58,21 @@ def train(
         matrix_rows=matrix_rows,
         matrix_cols=matrix_cols,
         rank=rank,
+        block_size=block_size,
+        d_model=d_model,
+        n_heads=n_heads,
+        n_layers=n_layers,
     )
     model = experiment.build_model()
-    optimizer = build_optimizer(optimizer_name, model.parameters(), lr, weight_decay, **(opt_kwargs or {}))
+    if optimizer_name in ("muon", "specmuon"):
+        matrix_params, other_params = _split_params(model)
+        optimizer = build_optimizer(optimizer_name, matrix_params, lr, weight_decay, **(opt_kwargs or {}))
+        adam_optimizer: torch.optim.Optimizer | None = (
+            torch.optim.AdamW(other_params, lr=lr, weight_decay=weight_decay) if other_params else None
+        )
+    else:
+        optimizer = build_optimizer(optimizer_name, model.parameters(), lr, weight_decay, **(opt_kwargs or {}))
+        adam_optimizer = None
 
     prefix = f"{run_name}/" if run_name else ""
     _svd_every = svd_every or log_every
@@ -49,6 +82,8 @@ def train(
     losses = []
     for step in range(1, steps + 1):
         optimizer.zero_grad(set_to_none=True)
+        if adam_optimizer is not None:
+            adam_optimizer.zero_grad(set_to_none=True)
         batch = experiment.next_batch()
         loss = experiment.loss(model, batch)
         loss.backward()
@@ -64,6 +99,8 @@ def train(
             optimizer.step(loss=loss)
         else:
             optimizer.step()
+        if adam_optimizer is not None:
+            adam_optimizer.step()
         losses.append(loss.item())
 
         if step == 1 or step % log_every == 0 or step == steps:

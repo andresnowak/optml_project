@@ -86,7 +86,7 @@ class SpecMuon(torch.optim.Optimizer):
                 G_hat = G / (torch.linalg.norm(G) + eps) # Frobenius norm normalization with stability eps (to have singular values [0, 1])
 
                 # ── Step 6: full SVD of normalised gradient ───────────────────
-                U, S, Vh = torch.linalg.svd(G_hat, full_matrices=False)
+                U, S, Vh = torch.linalg.svd(G_hat, full_matrices=False) # S \in [0, 1]
                 # U: (m, r), S: (r,), Vh: (r, n)  where r = min(m, n)
 
                 # ── Initialise per-parameter state ────────────────────────────
@@ -115,12 +115,12 @@ class SpecMuon(torch.optim.Optimizer):
 
                 #     eta_prime_j = lr / (s_j + eps) # inverse scaling by singular value (with stability eps)
                 #     # ‖d_g‖_F = s_j / (√L + ε)  because ‖u v^T‖_F = 1
-                #     d_g_norm = s_j / (sqrt_loss + eps)
+                #     d_g_norm = s_j / (sqrt_loss + eps) # per-direction gradient norm scaled inversely with current loss
 
                 #     r_new_j = r_prev_j / (1.0 + 0.5 * eta_prime_j * d_g_norm) # update rule for SAV variable r_j
 
                 #     # O += (r_new_j / (√L + ε)) · u_j v_j^T
-                #     scale = r_new_j / (sqrt_loss + eps)
+                #     scale = r_new_j / (sqrt_loss + eps) # scale SAV variable inverse with current loss for the update
                 #     O.addmm_(u_j.unsqueeze(1), v_j.unsqueeze(0), alpha=scale)
 
                 #     # SAV state update
