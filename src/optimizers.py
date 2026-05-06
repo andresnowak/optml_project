@@ -3,9 +3,9 @@ from __future__ import annotations
 from torch.optim import Adam, AdamW, SGD
 from torch.optim import Muon as _TorchMuon
 import torch
-import metalcore
+#import metalcore
 
-metalcore.enable_pytorch_overrides(activations=False, embedding_bag=False, normalization=False, softmax=False, optimizers=False, linalg=True)
+#metalcore.enable_pytorch_overrides(activations=False, embedding_bag=False, normalization=False, softmax=False, optimizers=False, linalg=True)
 
 
 class Muon(_TorchMuon):
@@ -197,7 +197,7 @@ def build_optimizer(name, params, lr, weight_decay, **kwargs):
         return OPTIMIZERS[name](params, lr=lr, weight_decay=weight_decay, **kw)
     if name == "specmuon":
         kw = {}
-        for key in ("momentum", "top_k", "sav_smooth", "eps", "adjust_lr_fn_fn"):
+        for key in ("momentum", "top_k", "sav_smooth", "eps", "adjust_lr_fn"):
             if kwargs.get(key) is not None:
                 kw[key] = kwargs[key]
         return SpecMuon(params, lr=lr, **kw)

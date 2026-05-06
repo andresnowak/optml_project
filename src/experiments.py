@@ -6,9 +6,9 @@ import urllib.request
 import torch
 import torch.nn.functional as F
 from torch import nn
-import metalcore
+#import metalcore
 
-metalcore.enable_pytorch_overrides(activations=False, embedding_bag=False, normalization=False, softmax=False, optimizers=False, linalg=True)
+#metalcore.enable_pytorch_overrides(activations=False, embedding_bag=False, normalization=False, softmax=False, optimizers=False, linalg=True)
 
 
 class _LinRegModel(nn.Module):
@@ -75,6 +75,135 @@ class MatrixFactorizationExperiment:
 
     def loss(self, model, batch):
         return ((model() - batch) ** 2).mean()
+
+
+class _MatrixModel(nn.Module):
+    def __init__(self, rows, cols, device, init_scale=0.1):
+        super().__init__()
+        self.W = nn.Parameter(torch.randn(rows, cols, device=device) * init_scale)
+
+    def forward(self):
+        return self.W
+
+
+class IllConditionedLinearRegressionExperiment:
+    """Linear regression with strongly anisotropic features.
+
+    This keeps the same objective as LinearRegressionExperiment but builds X
+    with a geometric singular-value decay, creating a difficult conditioning
+    profile where spectral adaptivity matters.
+    """
+
+    def __init__(self, device, batch_size, feature_dim=32, output_dim=16, samples=2048, **_):
+        self.device = device
+        self.feature_dim = feature_dim
+        self.output_dim = output_dim
+        self.samples = samples
+
+        basis, _ = torch.linalg.qr(torch.randn(feature_dim, feature_dim, device=device))
+        spectrum = torch.logspace(0.0, -4.0, feature_dim, device=device)
+        latent = torch.randn(feature_dim, samples, device=device)
+        self._X = basis @ (spectrum.unsqueeze(1) * latent)
+
+        W_true = torch.randn(output_dim, feature_dim, device=device)
+        self._Y = W_true @ self._X + 0.02 * torch.randn(output_dim, samples, device=device)
+
+    def build_model(self):
+        return _LinRegModel(self.output_dim, self.feature_dim, self.device)
+
+    def next_batch(self):
+        return self._X, self._Y
+
+    def loss(self, model, batch):
+        X, Y = batch
+        return 0.5 * ((model(X) - Y) ** 2).mean()
+
+
+class MatrixCompletionExperiment:
+    """Masked low-rank matrix recovery from partial observations."""
+
+    def __init__(self, device, batch_size, matrix_rows=64, matrix_cols=64, rank=8, **_):
+        self.device = device
+        self.matrix_rows = matrix_rows
+        self.matrix_cols = matrix_cols
+        self.rank = min(rank, matrix_rows, matrix_cols)
+
+        U, _ = torch.linalg.qr(torch.randn(matrix_rows, self.rank, device=device))
+        V, _ = torch.linalg.qr(torch.randn(matrix_cols, self.rank, device=device))
+        singulars = torch.logspace(0.0, -2.0, self.rank, device=device)
+        self._target = (U * singulars.unsqueeze(0)) @ V.T
+
+        observation_ratio = 0.30
+        self._mask = (torch.rand(matrix_rows, matrix_cols, device=device) < observation_ratio).float()
+        self._normalizer = self._mask.sum().clamp(min=1.0)
+
+    def build_model(self):
+        return _MatrixModel(self.matrix_rows, self.matrix_cols, self.device, init_scale=0.05)
+
+    def next_batch(self):
+        return self._target, self._mask, self._normalizer
+
+    def loss(self, model, batch):
+        target, mask, normalizer = batch
+        residual = (model() - target) * mask
+        return (residual ** 2).sum() / normalizer
+
+
+class SylvesterEquationExperiment:
+    """Solve AX + XB = C by minimizing ||AX + XB - C||_F^2."""
+
+    def __init__(self, device, batch_size, matrix_rows=64, matrix_cols=64, **_):
+        self.device = device
+        self.matrix_rows = matrix_rows
+        self.matrix_cols = matrix_cols
+
+        Ua, _ = torch.linalg.qr(torch.randn(matrix_rows, matrix_rows, device=device))
+        Ub, _ = torch.linalg.qr(torch.randn(matrix_cols, matrix_cols, device=device))
+        sa = torch.logspace(0.0, -3.0, matrix_rows, device=device)
+        sb = torch.logspace(0.0, -3.0, matrix_cols, device=device)
+        self._A = Ua @ torch.diag(sa) @ Ua.T
+        self._B = Ub @ torch.diag(sb) @ Ub.T
+
+        X_true = torch.randn(matrix_rows, matrix_cols, device=device)
+        self._C = self._A @ X_true + X_true @ self._B
+
+    def build_model(self):
+        return _MatrixModel(self.matrix_rows, self.matrix_cols, self.device, init_scale=0.1)
+
+    def next_batch(self):
+        return self._A, self._B, self._C
+
+    def loss(self, model, batch):
+        A, B, C = batch
+        X = model()
+        residual = A @ X + X @ B - C
+        return 0.5 * (residual ** 2).mean()
+
+
+class OrthogonalProcrustesExperiment:
+    """Fit a square matrix to a target orthogonal matrix with soft orthogonality."""
+
+    def __init__(self, device, batch_size, matrix_rows=64, matrix_cols=64, **_):
+        self.device = device
+        self.dim = min(matrix_rows, matrix_cols)
+        self.ortho_penalty = 0.1
+
+        target, _ = torch.linalg.qr(torch.randn(self.dim, self.dim, device=device))
+        self._target = target
+        self._identity = torch.eye(self.dim, device=device)
+
+    def build_model(self):
+        return _MatrixModel(self.dim, self.dim, self.device, init_scale=0.1)
+
+    def next_batch(self):
+        return self._target, self._identity
+
+    def loss(self, model, batch):
+        target, identity = batch
+        W = model()
+        fit = ((W - target) ** 2).mean()
+        orthogonality = ((W.T @ W - identity) ** 2).mean()
+        return fit + self.ortho_penalty * orthogonality
 
 
 _SHAKESPEARE_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
@@ -184,6 +313,10 @@ class ShakespeareExperiment:
 
 EXPERIMENTS = {
     "linear_regression": LinearRegressionExperiment,
+    "ill_conditioned_linear_regression": IllConditionedLinearRegressionExperiment,
     "matrix_factorization": MatrixFactorizationExperiment,
+    "matrix_completion": MatrixCompletionExperiment,
+    "sylvester_equation": SylvesterEquationExperiment,
+    "orthogonal_procrustes": OrthogonalProcrustesExperiment,
     "shakespeare": ShakespeareExperiment,
 }

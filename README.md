@@ -1,9 +1,9 @@
 # Optimization Benchmark Project
 
-Benchmarks optimizer convergence speed across controlled problems using PyTorch.
+Benchmarks optimizer convergence speed across controlled PyTorch problems.
 Compares `adam`, `adamw`, `sgd`, `muon` (via `torch.optim.Muon`), and `specmuon`.
 
-Managed with `uv`. Run `main.py` from the project root — no package install needed.
+Managed with `uv`. Run `main.py` from the project root (no package install needed).
 
 ## Setup
 
@@ -22,7 +22,12 @@ uv run python main.py [options]
 | name | description |
 |---|---|
 | `linear_regression` | Synthetic linear dataset, MSE loss |
+| `ill_conditioned_linear_regression` | Linear regression with strongly anisotropic feature spectrum |
 | `matrix_factorization` | Recover a low-rank matrix via two factor matrices |
+| `matrix_completion` | Recover a low-rank matrix from partial (masked) observations |
+| `sylvester_equation` | Solve `AX + XB = C` via residual minimization |
+| `orthogonal_procrustes` | Match an orthogonal target with soft orthogonality regularization |
+| `shakespeare` | Tiny GPT-style next-token language model on tiny Shakespeare |
 
 ## Modes
 
@@ -35,13 +40,13 @@ uv run python main.py --experiment linear_regression --optimizer muon --steps 30
 ### Compare all optimizers at a fixed lr
 
 ```bash
-uv run python main.py --experiment matrix_factorization --compare-all --lr 1e-2 --log-scale
+uv run python main.py --experiment matrix_completion --compare-all --lr 1e-2 --log-scale
 ```
 
 ### Sweep learning rates for one optimizer
 
 ```bash
-uv run python main.py --optimizer adam --sweep-lr --lr-min 1e-4 --lr-max 1.0 --lr-n 10 --log-scale
+uv run python main.py --experiment sylvester_equation --optimizer specmuon --sweep-lr --lr-min 1e-4 --lr-max 1.0 --lr-n 10 --log-scale
 ```
 
 ### Compare all optimizers each at their best lr
@@ -49,7 +54,7 @@ uv run python main.py --optimizer adam --sweep-lr --lr-min 1e-4 --lr-max 1.0 --l
 Sweeps the lr grid per optimizer and plots each one at the lr that achieved the lowest final loss.
 
 ```bash
-uv run python main.py --experiment linear_regression --compare-best-lr \
+uv run python main.py --experiment ill_conditioned_linear_regression --compare-best-lr \
     --lr-min 1e-4 --lr-max 1.0 --lr-n 10 --steps 300 --log-scale
 ```
 
@@ -64,7 +69,8 @@ uv run python main.py --experiment linear_regression --compare-best-lr \
 | `--eps` | adam, adamw, specmuon |
 | `--ns-steps` | muon (Newton-Schulz iterations) |
 | `--top-k` | specmuon (SAV singular directions, default 5) |
-| `--sav-smooth` | specmuon (smoothing factor ξ, default 0.1) |
+| `--sav-smooth` | specmuon (smoothing factor xi, default 0.1) |
+| `--adjust-lr-fn` | specmuon (`shape_scaling`) |
 
 ## Logging options
 
@@ -81,9 +87,9 @@ uv run python main.py --experiment linear_regression --compare-best-lr \
 
 ## Device
 
-`--device auto` (default) picks `cuda` → `mps` → `cpu`. Pass `cpu`, `cuda`, or `mps` to override.
+`--device auto` (default) picks `cuda` -> `mps` -> `cpu`. Pass `cpu`, `cuda`, or `mps` to override.
 
 ## Optimizers
 
-- **Muon** — subclassed from `torch.optim.Muon` for future shape-scaling extensions.
-- **SpecMuon** — Muon with SAV (Scalar Auxiliary Variable) adaptive scaling for the top-k singular directions. The remaining directions receive the standard Muon update. [Paper](https://www.arxiv.org/abs/2602.16167)
+- **Muon**: subclassed from `torch.optim.Muon` for future shape-scaling extensions.
+- **SpecMuon**: Muon with SAV (Scalar Auxiliary Variable) adaptive scaling for top-k singular directions, while remaining directions follow standard Muon-style orthogonalized updates.
