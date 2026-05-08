@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 
 import torch
 from torch import nn
@@ -81,6 +82,7 @@ def train(
 
     losses = []
     for step in range(1, steps + 1):
+        start = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
         if adam_optimizer is not None:
             adam_optimizer.zero_grad(set_to_none=True)
@@ -101,12 +103,14 @@ def train(
             optimizer.step()
         if adam_optimizer is not None:
             adam_optimizer.step()
+        end = time.perf_counter()
+
         losses.append(loss.item())
 
         if step == 1 or step % log_every == 0 or step == steps:
             current_lr = optimizer.param_groups[0]["lr"]
             print(f"step={step:04d} loss={loss.item():.6f} lr={current_lr:.2e}")
             if logger is not None:
-                logger.log({f"{prefix}loss": loss.item(), f"{prefix}lr": current_lr}, step)
+                logger.log({f"{prefix}loss": loss.item(), f"{prefix}lr": current_lr, f"{prefix}time(s)": end - start}, step)
 
     return losses

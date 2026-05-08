@@ -11,6 +11,12 @@ Managed with `uv`. Run `main.py` from the project root — no package install ne
 uv sync
 ```
 
+Optional `.env`:
+
+```bash
+WANDB_PROJECT=optml-bench
+```
+
 ## Running
 
 ```bash
@@ -38,10 +44,23 @@ uv run python main.py --experiment linear_regression --optimizer muon --steps 30
 uv run python main.py --experiment matrix_factorization --compare-all --lr 1e-2 --log-scale
 ```
 
-### Sweep learning rates for one optimizer
+### Sweep one hyperparameter for one optimizer
 
 ```bash
 uv run python main.py --optimizer adam --sweep-lr --lr-min 1e-4 --lr-max 1.0 --lr-n 10 --log-scale
+```
+
+```bash
+uv run python main.py --optimizer specmuon --sweep top_k=2,4,8 --log-scale
+```
+
+### Grid sweep multiple hyperparameters
+
+```bash
+uv run python main.py --optimizer specmuon \
+  --sweep lr=1e-3,1e-2 \
+  --sweep top_k=2,4,8 \
+  --backend wandb
 ```
 
 ## Optimizer hyperparameters
@@ -57,6 +76,10 @@ uv run python main.py --optimizer adam --sweep-lr --lr-min 1e-4 --lr-max 1.0 --l
 | `--top-k` | specmuon (SAV singular directions, default 5) |
 | `--sav-smooth` | specmuon (smoothing factor ξ, default 0.1) |
 
+`--sweep PARAM=v1,v2,...` supports `lr`, `weight_decay`, `momentum`, `beta1`, `beta2`, `eps`, `ns_steps`, `top_k`, `sav_smooth`, and `adjust_lr_fn`.
+
+Repeat `--sweep` to run a Cartesian-product grid sweep.
+
 ## Logging options
 
 | flag | effect |
@@ -69,6 +92,8 @@ uv run python main.py --optimizer adam --sweep-lr --lr-min 1e-4 --lr-max 1.0 --l
 | `--log-grad-svd` | log singular values of parameter gradients |
 | `--svd-every N` | SVD logging frequency (default: same as `--log-every`) |
 | `--svd-top-k K` | only show top-k singular values |
+
+`--wandb-project` defaults to `WANDB_PROJECT` from `.env`, then falls back to `optml-bench`.
 
 ## Device
 
