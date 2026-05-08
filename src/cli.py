@@ -68,6 +68,20 @@ def parse_sweep_arg(raw: str) -> tuple[str, list[object]]:
     return name, parsed
 
 
+def build_wandb_run_name(experiment: str, optimizer: str, lr: float, weight_decay: float, opt_kwargs: dict) -> str:
+    parts = [experiment, optimizer, f"lr={lr:.2e}"]
+    if weight_decay:
+        parts.append(f"wd={weight_decay:.2e}")
+    for k, v in sorted(opt_kwargs.items()):
+        if k == "betas":
+            parts.append(f"b1={v[0]:.3g}_b2={v[1]:.3g}")
+        elif isinstance(v, float):
+            parts.append(f"{k}={v:.3g}")
+        else:
+            parts.append(f"{k}={v}")
+    return "_".join(parts)
+
+
 def format_sweep_value(name: str, value: object) -> str:
     if isinstance(value, float):
         return f"{value:.2e}" if name in {"lr", "weight_decay", "eps"} else f"{value:.4g}"
@@ -256,6 +270,13 @@ def main() -> None:
         assert_optimizer_supports_params(optimizer_name, override_keys)
         reset_seeds()
         lr, weight_decay, opt_kwargs = build_run_settings(overrides or {})
+        if logger is not None:
+            wandb_name = build_wandb_run_name(args.experiment, optimizer_name, lr, weight_decay, opt_kwargs)
+            run_config = {"experiment": args.experiment, "optimizer": optimizer_name,
+                          "lr": lr, "weight_decay": weight_decay, "steps": args.steps,
+                          "batch_size": args.batch_size, **opt_kwargs}
+            metric_prefix = f"{run_name}/" if run_name else ""
+            logger.start_run(wandb_name, run_config, metric_prefix=metric_prefix)
         return train(
             optimizer_name=optimizer_name,
             lr=lr,

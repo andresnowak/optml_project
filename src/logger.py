@@ -15,6 +15,9 @@ class BaseLogger(ABC):
     @abstractmethod
     def finish(self) -> None: ...
 
+    def start_run(self, name: str, config: dict | None = None) -> None:
+        pass
+
 
 class MatplotlibLogger(BaseLogger):
     def __init__(self, title: str, log_scale: bool = False, smooth: int = 1,
@@ -75,13 +78,25 @@ class MatplotlibLogger(BaseLogger):
 
 
 class WandbLogger(BaseLogger):
-    def __init__(self, project: str, config: dict, svd_top_k: int | None = None):
-        wandb.init(project=project, config=config)
+    def __init__(self, project: str, config: dict | None = None, svd_top_k: int | None = None):
+        self._project = project
+        self._base_config = config or {}
         self.svd_top_k = svd_top_k
+        self._run_active = False
+        self._metric_prefix = ""
+
+    def start_run(self, name: str, config: dict | None = None, metric_prefix: str = "") -> None:
+        if self._run_active:
+            wandb.finish()
+        wandb.init(project=self._project, name=name,
+                   config=config if config is not None else self._base_config)
+        self._run_active = True
+        self._metric_prefix = metric_prefix
 
     def log(self, metrics: dict, step: int) -> None:
         payload = {}
         for name, value in metrics.items():
+            name = name.removeprefix(self._metric_prefix)
             if isinstance(value, torch.Tensor):
                 svs = value.cpu().numpy()
                 n_svs = len(svs) if self.svd_top_k is None else min(self.svd_top_k, len(svs))
@@ -93,7 +108,9 @@ class WandbLogger(BaseLogger):
         wandb.log(payload, step=step)
 
     def finish(self) -> None:
-        wandb.finish()
+        if self._run_active:
+            wandb.finish()
+            self._run_active = False
 
 
 def make_logger(backend: str | None, title: str, **kwargs) -> BaseLogger | None:
