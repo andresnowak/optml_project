@@ -44,15 +44,6 @@ uv run python main.py --experiment matrix_factorization --compare-all --lr 1e-2 
 uv run python main.py --optimizer adam --sweep-lr --lr-min 1e-4 --lr-max 1.0 --lr-n 10 --log-scale
 ```
 
-### Compare all optimizers each at their best lr
-
-Sweeps the lr grid per optimizer and plots each one at the lr that achieved the lowest final loss.
-
-```bash
-uv run python main.py --experiment linear_regression --compare-best-lr \
-    --lr-min 1e-4 --lr-max 1.0 --lr-n 10 --steps 300 --log-scale
-```
-
 ## Optimizer hyperparameters
 
 | flag | applies to |

@@ -62,18 +62,15 @@ def main() -> None:
     modes = parser.add_argument_group("modes")
     modes.add_argument("--compare-all", action="store_true", help="Run all optimizers at --lr.")
     modes.add_argument("--sweep-lr", action="store_true", help="Sweep lr over a log-spaced grid.")
-    modes.add_argument("--compare-best-lr", action="store_true", help="Sweep lr per optimizer, compare at best lr.")
     modes.add_argument("--lr-min", type=float, default=1e-4)
     modes.add_argument("--lr-max", type=float, default=1.0)
     modes.add_argument("--lr-n", type=int, default=8)
-    modes.add_argument("--compare-rtol", type=float, default=0.01,
-                       help="Relative tolerance for best-lr tiebreak: runs within rtol of best loss prefer fewer steps.")
 
     args = parser.parse_args()
 
-    active_modes = [args.sweep_lr, args.compare_all, args.compare_best_lr]
+    active_modes = [args.sweep_lr, args.compare_all]
     if sum(active_modes) > 1:
-        parser.error("--sweep-lr, --compare-all, and --compare-best-lr are mutually exclusive.")
+        parser.error("--sweep-lr and --compare-all are mutually exclusive.")
     if args.lr_min >= args.lr_max:
         parser.error("--lr-min must be less than --lr-max.")
     if args.lr_n < 2:
@@ -87,7 +84,7 @@ def main() -> None:
     _muon_only = {"--ns-steps": args.ns_steps}
     _muon_like = {"--momentum": args.momentum}
 
-    if not args.compare_all and not args.compare_best_lr:
+    if not args.compare_all:
         for flag, val in _specmuon_only.items():
             if val is not None and args.optimizer != "specmuon":
                 parser.error(f"{flag} can only be used with --optimizer specmuon.")
@@ -97,10 +94,6 @@ def main() -> None:
         for flag, val in _muon_like.items():
             if val is not None and args.optimizer not in ("muon", "specmuon", "sgd"):
                 parser.error(f"{flag} can only be used with --optimizer muon, specmuon, or sgd.")
-
-    # set seed
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
 
     device = torch.device(
         "cuda" if torch.cuda.is_available() else
@@ -151,39 +144,36 @@ def main() -> None:
                          config=vars(args), svd_top_k=args.svd_top_k)
     lrs = np.logspace(np.log10(args.lr_min), np.log10(args.lr_max), args.lr_n)
 
-    if args.sweep_lr:
-        logger = make_logger(args.backend, f"LR sweep — {args.experiment} / {args.optimizer}", **logger_kwargs)
-        for lr in lrs:
-            train(optimizer_name=args.optimizer, lr=lr, logger=logger, run_name=f"lr={lr:.2e}", **common)
-        if logger:
-            logger.finish()
+    def reset_seeds() -> None:
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
 
-    elif args.compare_best_lr:
-        logger = make_logger(args.backend, f"Best-lr comparison — {args.experiment}", **logger_kwargs)
-        for name in sorted(OPTIMIZERS):
-            print(f"\n── sweeping {name} ──")
-            best_losses, best_lr = None, None
+    def run_paired(optimizer_name: str, lr: float, logger=None, run_name: str | None = None) -> list[float]:
+        reset_seeds()
+        return train(optimizer_name=optimizer_name, lr=lr, logger=logger, run_name=run_name, **common)
+
+    mode = (
+        "sweep_lr" if args.sweep_lr else
+        "compare_all" if args.compare_all else
+        "single"
+    )
+    title = {
+        "sweep_lr": f"LR sweep — {args.experiment} / {args.optimizer}",
+        "compare_all": f"Optimizer comparison — {args.experiment}",
+        "single": f"{args.experiment} / {args.optimizer}",
+    }[mode]
+    logger = make_logger(args.backend, title, **logger_kwargs)
+
+    try:
+        if mode == "sweep_lr":
             for lr in lrs:
-                losses = train(optimizer_name=name, lr=lr, **common)
-                curr_min, best_min = min(losses), min(best_losses) if best_losses is not None else float("inf")
-                if best_losses is None or curr_min < best_min or (curr_min < best_min * (1 + args.compare_rtol) and np.argmin(losses) < np.argmin(best_losses)):
-                    best_losses, best_lr = losses, lr
-            print(f"   → best lr={best_lr:.2e}  final loss={best_losses[-1]:.6f}")
-            train(optimizer_name=name, lr=best_lr, logger=logger,
-                  run_name=f"{name} lr={best_lr:.2e}", **common)
-        if logger:
-            logger.finish()
-
-    elif args.compare_all:
-        logger = make_logger(args.backend, f"Optimizer comparison — {args.experiment}", **logger_kwargs)
-        for name in sorted(OPTIMIZERS):
-            train(optimizer_name=name, lr=args.lr, logger=logger, run_name=name, **common)
-        if logger:
-            logger.finish()
-
-    else:
-        logger = make_logger(args.backend, f"{args.experiment} / {args.optimizer}", **logger_kwargs)
-        train(optimizer_name=args.optimizer, lr=args.lr, logger=logger, **common)
+                run_paired(args.optimizer, lr, logger=logger, run_name=f"lr={lr:.2e}")
+        elif mode == "compare_all":
+            for name in sorted(OPTIMIZERS):
+                run_paired(name, args.lr, logger=logger, run_name=name)
+        else:
+            run_paired(args.optimizer, args.lr, logger=logger)
+    finally:
         if logger:
             logger.finish()
 
