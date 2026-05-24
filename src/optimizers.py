@@ -2,15 +2,83 @@ from __future__ import annotations
 
 from torch.optim import Adam, AdamW, SGD
 from torch.optim import Muon as _TorchMuon
+from torch.optim._muon import muon as _torch_muon_functional
 import torch
 import metalcore
 
 metalcore.enable_pytorch_overrides(activations=False, embedding_bag=False, normalization=False, softmax=False, optimizers=False, linalg=True)
 
 
+def _keller_jordan_shape_scale(shape: torch.Size) -> float:
+    """Keller/Jordan Muon shape scaling: sqrt(max(1, rows / cols))."""
+    rows, cols = shape[:2]
+    return float(max(1.0, rows / cols) ** 0.5)
+
+
 class Muon(_TorchMuon):
-    """Our Muon subclass — adjust_lr_fn shape-scaling functions will be added here."""
-    pass
+    """Muon with repo-controlled learning-rate shape scaling.
+
+    PyTorch's Muon applies its own shape-dependent LR adjustment even when
+    ``adjust_lr_fn`` is None. This subclass deliberately disables that internal
+    adjustment in the functional kernel and applies only the scaling selected
+    here, so experiments know exactly which scaling rule is active.
+    """
+
+    _NO_TORCH_LR_ADJUST = "_optml_no_torch_lr_adjust"
+
+    @staticmethod
+    def _lr_scale(shape: torch.Size, adjust_lr_fn: str | None) -> float:
+        if adjust_lr_fn is None:
+            return 1.0
+        if adjust_lr_fn == "shape_scaling":
+            return _keller_jordan_shape_scale(shape)
+        raise ValueError(f"Unsupported Muon adjust_lr_fn: {adjust_lr_fn}")
+
+    def __init__(self, params, *args, adjust_lr_fn: str | None = None, **kwargs):
+        if adjust_lr_fn not in (None, "shape_scaling"):
+            raise ValueError(f"Unsupported Muon adjust_lr_fn: {adjust_lr_fn}")
+        # Keep torch's own adjust_lr_fn disabled. We store our selected mode
+        # separately and apply it in step().
+        super().__init__(params, *args, adjust_lr_fn=None, **kwargs)
+        for group in self.param_groups:
+            group["optml_adjust_lr_fn"] = adjust_lr_fn
+
+    @torch.no_grad()
+    def step(self, closure=None):  # type: ignore[override]
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            base_lr = group["lr"]
+            adjust_lr_fn: str | None = group["optml_adjust_lr_fn"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+
+                state = self.state[p]
+                if len(state) == 0:
+                    state["momentum_buffer"] = torch.zeros_like(p)
+
+                lr = base_lr * self._lr_scale(p.shape, adjust_lr_fn)
+                _torch_muon_functional(
+                    [p],
+                    [p.grad],
+                    [state["momentum_buffer"]],
+                    lr=lr,
+                    weight_decay=group["weight_decay"],
+                    momentum=group["momentum"],
+                    nesterov=group["nesterov"],
+                    ns_coefficients=group["ns_coefficients"],
+                    ns_steps=group["ns_steps"],
+                    eps=group["eps"],
+                    adjust_lr_fn=self._NO_TORCH_LR_ADJUST,
+                    has_complex=torch.is_complex(p),
+                )
+
+        return loss
 
 
 class SpecMuon(torch.optim.Optimizer):
@@ -28,7 +96,7 @@ class SpecMuon(torch.optim.Optimizer):
         top_k:          number of singular directions to treat with SAV (default 5)
         sav_smooth:     SAV smoothing factor ξ ∈ [0, 1]  (default 0.1)
         eps:            numerical stability ε  (default 1e-8)
-        adjust_lr_fn:      lr scaling mode. None = no scaling, "shape_scaling" = sqrt(max(m, n)).
+        adjust_lr_fn:      lr scaling mode. None = no scaling, "shape_scaling" = sqrt(max(1, rows / cols)).
     """
 
     def __init__(
@@ -107,35 +175,6 @@ class SpecMuon(torch.optim.Optimizer):
                 O = torch.zeros_like(G) # (rows, cols)
 
                 # ── Steps 10-21: SAV (Scalar Auxiliary Variable) update for top-k directions ──────────────
-                # for j in range(k_act):
-                #     u_j = U[:, j]        # (m,)
-                #     s_j = S[j].item()
-                #     v_j = Vh[j, :]       # (n,)
-                #     r_prev_j = r[j].item()
-
-                #     eta_prime_j = lr / (s_j + eps) # inverse scaling by singular value (with stability eps)
-                #     # ‖d_g‖_F = s_j / (√L + ε)  because ‖u v^T‖_F = 1
-                #     d_g_norm = s_j / (sqrt_loss + eps) # per-direction gradient norm scaled inversely with current loss
-
-                #     r_new_j = r_prev_j / (1.0 + 0.5 * eta_prime_j * d_g_norm) # update rule for SAV variable r_j
-
-                #     # O += (r_new_j / (√L + ε)) · u_j v_j^T
-                #     scale = r_new_j / (sqrt_loss + eps) # scale SAV variable inverse with current loss for the update
-                #     O.addmm_(u_j.unsqueeze(1), v_j.unsqueeze(0), alpha=scale)
-
-                #     # SAV state update
-                #     T = (
-                #         (1.0 - xi) * r_new_j ** 2
-                #         + xi * r_prev_j ** 2
-                #         + (1.0 - xi) * (r_new_j - r_prev_j) ** 2
-                #     ) # smoothed energy proxy T_j for the j-th direction, combining current and previous r_j values with smoothing factor xi
-                #     sqrt_T = max(T, 0.0) ** 0.5
-                #     denom = sqrt_loss - r_new_j + eps
-                #     chi = float(torch.clamp(
-                #         torch.tensor((sqrt_loss - sqrt_T) / denom), 0.0, 1.0
-                #     )) # blending factor χ_j (chi distribution) for smoothing the update of r_j, based on how close the energy proxy T_j is to the current loss sqrt_loss
-                #     r_next[j] = chi * r_new_j + (1.0 - chi) * sqrt_loss
-
                 s_k = S[:k_act]                                           # (k_act,)
                 eta_prime = lr / (s_k + eps)                              # inverse scaling by singular value
                 d_g_norm = s_k / (sqrt_loss + eps)                        # ‖d_g‖_F per direction
@@ -163,7 +202,7 @@ class SpecMuon(torch.optim.Optimizer):
                     O.addmm_(U_rest, Vh_rest)
 
                 # ── Steps 28-29: momentum + parameter update ──────────────────
-                lr_scale = max(G.shape) ** 0.5 if adjust_lr_fn == "shape_scaling" else 1.0
+                lr_scale = _keller_jordan_shape_scale(p.shape) if adjust_lr_fn == "shape_scaling" else 1.0
                 B_new = mu * B + O
                 state["momentum_buffer"] = B_new
                 p.add_(B_new.reshape(orig_shape), alpha=-lr * lr_scale)
@@ -183,7 +222,7 @@ OPTIMIZERS = {
 def build_optimizer(name, params, lr, weight_decay, **kwargs):
     """Build an optimizer, forwarding only the kwargs each one understands."""
     if name == "muon":
-        kw = {k: kwargs[k] for k in ("momentum", "ns_steps") if kwargs.get(k) is not None}
+        kw = {k: kwargs[k] for k in ("momentum", "ns_steps", "adjust_lr_fn") if kwargs.get(k) is not None}
         return Muon(params, lr=lr, **kw)
     if name == "sgd":
         kw = {k: kwargs[k] for k in ("momentum",) if kwargs.get(k) is not None}
@@ -197,7 +236,7 @@ def build_optimizer(name, params, lr, weight_decay, **kwargs):
         return OPTIMIZERS[name](params, lr=lr, weight_decay=weight_decay, **kw)
     if name == "specmuon":
         kw = {}
-        for key in ("momentum", "top_k", "sav_smooth", "eps", "adjust_lr_fn_fn"):
+        for key in ("momentum", "top_k", "sav_smooth", "eps", "adjust_lr_fn"):
             if kwargs.get(key) is not None:
                 kw[key] = kwargs[key]
         return SpecMuon(params, lr=lr, **kw)

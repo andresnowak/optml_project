@@ -24,7 +24,7 @@ SWEEP_SPECS = {
     "ns_steps": {"type": int, "optimizers": {"muon"}},
     "top_k": {"type": int, "optimizers": {"specmuon"}},
     "sav_smooth": {"type": float, "optimizers": {"specmuon"}},
-    "adjust_lr_fn": {"type": str, "choices": {"shape_scaling"}, "optimizers": {"specmuon"}},
+    "adjust_lr_fn": {"type": str, "choices": {"shape_scaling"}, "optimizers": {"muon", "specmuon"}},
 }
 
 
@@ -131,7 +131,7 @@ def main() -> None:
     opt.add_argument("--ns-steps", type=int, default=None, help="Newton-Schulz iterations (Muon).")
     opt.add_argument("--top-k", type=int, default=None, help="Top-k SAV singular directions (SpecMuon).")
     opt.add_argument("--sav-smooth", type=float, default=None, help="SAV smoothing factor ξ (SpecMuon).")
-    opt.add_argument("--adjust-lr-fn", choices=("shape_scaling",), default=None, help="LR scaling mode (SpecMuon).")
+    opt.add_argument("--adjust-lr-fn", choices=("shape_scaling",), default=None, help="Repo-controlled LR scaling mode (Muon / SpecMuon).")
 
     log_group = parser.add_argument_group("logging")
     log_group.add_argument("--backend", choices=("matplotlib", "wandb"), default=None,
@@ -174,7 +174,8 @@ def main() -> None:
     if args.steps < 1:
         parser.error("--steps must be at least 1.")
 
-    _specmuon_only = {"--top-k": args.top_k, "--sav-smooth": args.sav_smooth, "--adjust-lr-fn": args.adjust_lr_fn}
+    _specmuon_only = {"--top-k": args.top_k, "--sav-smooth": args.sav_smooth}
+    _muon_family = {"--adjust-lr-fn": args.adjust_lr_fn}
     _muon_only = {"--ns-steps": args.ns_steps}
     _muon_like = {"--momentum": args.momentum}
     sweep_params: dict[str, list[object]] = {}
@@ -191,6 +192,9 @@ def main() -> None:
             if val is not None and args.optimizer != "specmuon":
                 parser.error(f"{flag} can only be used with --optimizer specmuon.")
         for flag, val in _muon_only.items():
+            if val is not None and args.optimizer not in ("muon", "specmuon"):
+                parser.error(f"{flag} can only be used with --optimizer muon or specmuon.")
+        for flag, val in _muon_family.items():
             if val is not None and args.optimizer not in ("muon", "specmuon"):
                 parser.error(f"{flag} can only be used with --optimizer muon or specmuon.")
         for flag, val in _muon_like.items():
