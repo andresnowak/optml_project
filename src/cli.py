@@ -138,6 +138,10 @@ def main() -> None:
                            help="Logging backend. Omit for console-only output.")
     log_group.add_argument("--log-grad-svd", action="store_true",
                            help="Log singular values of parameter gradients.")
+    log_group.add_argument("--log-grad-norms", action="store_true",
+                           help="Log per-parameter gradient norms and total gradient norm.")
+    log_group.add_argument("--log-weight-norms", action="store_true",
+                           help="Log per-parameter weight norms.")
     log_group.add_argument("--svd-every", type=int, default=None,
                            help="Log SVD every N steps (default: same as --log-every).")
     log_group.add_argument("--svd-top-k", type=int, default=None,
@@ -221,6 +225,8 @@ def main() -> None:
         n_layers=args.n_layers,
         log_grad_svd=args.log_grad_svd,
         svd_every=args.svd_every,
+        log_grad_norms=args.log_grad_norms,
+        log_weight_norms=args.log_weight_norms,
     )
 
     logger_kwargs = dict(log_scale=args.log_scale, smooth=args.smooth,

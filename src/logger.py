@@ -15,7 +15,7 @@ class BaseLogger(ABC):
     @abstractmethod
     def finish(self) -> None: ...
 
-    def start_run(self, name: str, config: dict | None = None) -> None:
+    def start_run(self, name: str, config: dict | None = None, metric_prefix: str = "") -> None:
         pass
 
 

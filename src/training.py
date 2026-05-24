@@ -49,6 +49,8 @@ def train(
     run_name: str | None = None,
     log_grad_svd: bool = False,
     svd_every: int | None = None,
+    log_grad_norms: bool = False,
+    log_weight_norms: bool = False,
 ) -> list[float]:
     experiment = EXPERIMENTS[experiment_name](
         device=device,
@@ -109,8 +111,27 @@ def train(
 
         if step == 1 or step % log_every == 0 or step == steps:
             current_lr = optimizer.param_groups[0]["lr"]
-            print(f"step={step:04d} loss={loss.item():.6f} lr={current_lr:.2e}")
+            print(f"step={step:04d} loss={loss.item():.6f} lr={current_lr:.2e} time(s)={end - start:.2f}")
             if logger is not None:
                 logger.log({f"{prefix}loss": loss.item(), f"{prefix}lr": current_lr, f"{prefix}time(s)": end - start}, step)
+                if log_grad_norms:
+                    grad_norms = {
+                        f"{prefix}grad_norm/{n}": p.grad.detach().norm().item()
+                        for n, p in model.named_parameters()
+                        if p.grad is not None
+                    }
+                    if grad_norms:
+                        total_grad_norm = torch.linalg.vector_norm(
+                            torch.stack([
+                                p.grad.detach().norm()
+                                for p in model.parameters()
+                                if p.grad is not None
+                            ])
+                        ).item()
+                        grad_norms[f"{prefix}grad_norm/total"] = total_grad_norm
+                        logger.log(grad_norms, step)
+                if log_weight_norms:
+                    logger.log({f"{prefix}weight_norm/{n}": p.detach().norm().item()
+                                 for n, p in model.named_parameters()}, step)
 
     return losses
