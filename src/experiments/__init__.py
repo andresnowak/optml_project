@@ -7,12 +7,13 @@ except ImportError:
     pass
 
 from .base import BaseExperiment
-from .linear_regression import LinearRegressionExperiment
+from .linear_regression import IllConditionedLinearRegressionExperiment, LinearRegressionExperiment
 from .matrix_factorization import MatrixFactorizationExperiment
 from .shakespeare import ShakespeareExperiment
 
 
 EXPERIMENTS: dict[str, type[BaseExperiment]] = {
+    "ill_conditioned_linear_regression": IllConditionedLinearRegressionExperiment,
     "linear_regression": LinearRegressionExperiment,
     "matrix_factorization": MatrixFactorizationExperiment,
     "shakespeare": ShakespeareExperiment,
@@ -21,6 +22,7 @@ EXPERIMENTS: dict[str, type[BaseExperiment]] = {
 __all__ = [
     "BaseExperiment",
     "EXPERIMENTS",
+    "IllConditionedLinearRegressionExperiment",
     "LinearRegressionExperiment",
     "MatrixFactorizationExperiment",
     "ShakespeareExperiment",

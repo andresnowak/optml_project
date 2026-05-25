@@ -10,6 +10,7 @@ from torch import nn
 from .base import BaseExperiment
 
 
+# --------- Shakespeare Character-Level Language Modeling ----------
 _SHAKESPEARE_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
 _SHAKESPEARE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "shakespeare.txt")
 

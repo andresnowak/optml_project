@@ -71,7 +71,7 @@ _FLAG_TO_KWARG: dict[str, str] = {
 
 # Args that flow into experiment_kwargs (filtered against the experiment class signature in train()).
 EXPERIMENT_FIELDS = frozenset({
-    "feature_dim", "output_dim", "samples",
+    "feature_dim", "output_dim", "samples", "condition_number",
     "matrix_rows", "matrix_cols", "rank",
     "block_size", "d_model", "n_heads", "n_layers",
 })
@@ -205,6 +205,8 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--samples", type=int, default=2048, help="N: number of data points (linear regression).")
     exp.add_argument("--feature-dim", type=int, default=32, help="n: input dimension / cols of W (linear regression).")
     exp.add_argument("--output-dim", type=int, default=16, help="m: output dimension / rows of W (linear regression).")
+    exp.add_argument("--condition-number", type=float, default=1e4,
+                     help="Condition number for ill-conditioned linear regression.")
     exp.add_argument("--matrix-rows", type=int, default=64, help="m: rows of A (matrix factorization).")
     exp.add_argument("--matrix-cols", type=int, default=64, help="n: cols of A (matrix factorization).")
     exp.add_argument("--rank", type=int, default=8, help="k: inner rank (matrix factorization).")
