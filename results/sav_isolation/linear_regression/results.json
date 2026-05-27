@@ -1,5 +1,5 @@
 {
-  "experiment": "matrix_factorization",
+  "experiment": "linear_regression",
   "lr": 0.1,
   "steps": 300,
   "variants": {
@@ -8,32 +8,32 @@
         "top_k": 0,
         "gate_threshold": 0.0
       },
-      "score": 0.00016564260295126587,
-      "final_loss": 0.00016564260295126587
+      "score": 0.0013334444956853986,
+      "final_loss": 0.0013544121757149696
     },
     "top_k=1": {
       "opt_kwargs": {
         "top_k": 1,
         "gate_threshold": 0.0
       },
-      "score": 0.0037492478732019663,
-      "final_loss": 0.0037492478732019663
+      "score": 0.003966148477047682,
+      "final_loss": 0.003966148477047682
     },
     "top_k=6 (paper default)": {
       "opt_kwargs": {
         "top_k": 6,
         "gate_threshold": 0.0
       },
-      "score": 0.023150116205215454,
-      "final_loss": 0.023150116205215454
+      "score": 0.006777413189411163,
+      "final_loss": 0.006777413189411163
     },
     "top_k=32": {
       "opt_kwargs": {
         "top_k": 32,
         "gate_threshold": 0.0
       },
-      "score": 0.01674465462565422,
-      "final_loss": 0.01674465462565422
+      "score": 0.027996540069580078,
+      "final_loss": 0.027996540069580078
     },
     "gated (\u03c4=0.05, k=6)": {
       "opt_kwargs": {
@@ -41,8 +41,8 @@
         "gate_threshold": 0.05,
         "gate_window": 10
       },
-      "score": 0.005532578565180302,
-      "final_loss": 0.005532578565180302
+      "score": 0.001514733536168933,
+      "final_loss": 0.001514733536168933
     }
   }
 }
