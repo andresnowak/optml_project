@@ -1,0 +1,10 @@
+extends: _base.yaml
+
+experiment: matrix_factorization
+matrix_rows: 64
+matrix_cols: 64
+rank: 8
+
+steps: 300
+log_every: 25
+log_scale: true

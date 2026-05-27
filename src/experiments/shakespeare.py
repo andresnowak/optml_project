@@ -6,79 +6,12 @@ import urllib.request
 import torch
 import torch.nn.functional as F
 from torch import nn
-import metalcore
 
-metalcore.enable_pytorch_overrides(activations=False, embedding_bag=False, normalization=False, softmax=False, optimizers=False, linalg=True)
-
-
-class _LinRegModel(nn.Module):
-    def __init__(self, m, n, device):
-        super().__init__()
-        self.W = nn.Parameter(torch.randn(m, n, device=device) * 0.01)  # (m, n)
-
-    def forward(self, X):
-        return self.W @ X  # (m, N)
-
-
-class LinearRegressionExperiment:
-    """min_W 1/2 ||WX - Y||_F^2  with W∈R^{m×n}, X∈R^{n×N}, Y∈R^{m×N}.
-
-    Gradient: ∇f(W) = (WX - Y) X^T
-    """
-
-    def __init__(self, device, batch_size, feature_dim=32, output_dim=16, samples=2048, **_):
-        self.device = device
-        self.feature_dim = feature_dim   # n
-        self.output_dim = output_dim     # m
-        self.samples = samples           # N
-        # X: (n, N),  Y: (m, N)
-        W_true = torch.randn(output_dim, feature_dim, device=device)
-        self._X = torch.randn(feature_dim, samples, device=device)
-        self._Y = W_true @ self._X + 0.05 * torch.randn(output_dim, samples, device=device)
-
-    def build_model(self):
-        return _LinRegModel(self.output_dim, self.feature_dim, self.device)
-
-    def next_batch(self):
-        return self._X, self._Y
-
-    def loss(self, model, batch):
-        X, Y = batch
-        return 0.5 * ((model(X) - Y) ** 2).mean()
-
-
-class _MFModel(nn.Module):
-    def __init__(self, m, k, n):
-        super().__init__()
-        self.L = nn.Parameter(torch.randn(m, k) * 0.1)  # m x k
-        self.R = nn.Parameter(torch.randn(k, n) * 0.1)  # k x n
-
-    def forward(self):
-        return self.L @ self.R  # m x n
-
-
-class MatrixFactorizationExperiment:
-    def __init__(self, device, batch_size, matrix_rows=64, matrix_cols=64, rank=8, **_):
-        self.device = device
-        self.matrix_rows = matrix_rows
-        self.matrix_cols = matrix_cols
-        self.rank = rank
-        L = torch.randn(matrix_rows, rank, device=device)   # m x k
-        R = torch.randn(rank, matrix_cols, device=device)   # k x n
-        self._target = L @ R                                 # m x n
-
-    def build_model(self):
-        return _MFModel(self.matrix_rows, self.rank, self.matrix_cols).to(self.device)
-
-    def next_batch(self):
-        return self._target
-
-    def loss(self, model, batch):
-        return ((model() - batch) ** 2).mean()
+from .base import BaseExperiment
 
 
 _SHAKESPEARE_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
-_SHAKESPEARE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "shakespeare.txt")
+_SHAKESPEARE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "shakespeare.txt")
 
 
 def _load_shakespeare() -> str:
@@ -91,7 +24,7 @@ def _load_shakespeare() -> str:
 
 
 class _CausalSelfAttention(nn.Module):
-    def __init__(self, d_model, n_heads, block_size):
+    def __init__(self, d_model: int, n_heads: int, block_size: int):
         super().__init__()
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
@@ -99,7 +32,7 @@ class _CausalSelfAttention(nn.Module):
         self.proj = nn.Linear(d_model, d_model, bias=False)
         self.register_buffer("mask", torch.tril(torch.ones(block_size, block_size)))
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
         q, k, v = self.qkv(x).split(C, dim=2)
         q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
@@ -112,31 +45,31 @@ class _CausalSelfAttention(nn.Module):
 
 
 class _MLP(nn.Module):
-    def __init__(self, d_model):
+    def __init__(self, d_model: int):
         super().__init__()
         self.fc1 = nn.Linear(d_model, 4 * d_model, bias=False)
         self.fc2 = nn.Linear(4 * d_model, d_model, bias=False)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc2(F.gelu(self.fc1(x)))
 
 
 class _TransformerBlock(nn.Module):
-    def __init__(self, d_model, n_heads, block_size):
+    def __init__(self, d_model: int, n_heads: int, block_size: int):
         super().__init__()
         self.ln1 = nn.LayerNorm(d_model)
         self.attn = _CausalSelfAttention(d_model, n_heads, block_size)
         self.ln2 = nn.LayerNorm(d_model)
         self.mlp = _MLP(d_model)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln1(x))
         x = x + self.mlp(self.ln2(x))
         return x
 
 
 class _MiniGPT(nn.Module):
-    def __init__(self, vocab_size, d_model, n_heads, n_layers, block_size):
+    def __init__(self, vocab_size: int, d_model: int, n_heads: int, n_layers: int, block_size: int):
         super().__init__()
         self.tok_emb = nn.Embedding(vocab_size, d_model)
         self.pos_emb = nn.Embedding(block_size, d_model)
@@ -144,14 +77,14 @@ class _MiniGPT(nn.Module):
         self.ln_f = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, vocab_size, bias=False)
 
-    def forward(self, idx):
+    def forward(self, idx: torch.Tensor) -> torch.Tensor:
         B, T = idx.shape
         x = self.tok_emb(idx) + self.pos_emb(torch.arange(T, device=idx.device))
         return self.head(self.ln_f(self.blocks(x)))
 
 
-class ShakespeareExperiment:
-    def __init__(self, device, batch_size, block_size=128, d_model=128, n_heads=4, n_layers=4, **_):
+class ShakespeareExperiment(BaseExperiment):
+    def __init__(self, device, batch_size, block_size: int = 128, d_model: int = 128, n_heads: int = 4, n_layers: int = 4):
         self.device = device
         self.batch_size = batch_size
         self.block_size = block_size
@@ -167,7 +100,7 @@ class ShakespeareExperiment:
         n = int(0.9 * len(data))
         self._train = data[:n]
 
-    def build_model(self):
+    def build_model(self) -> nn.Module:
         return _MiniGPT(self.vocab_size, self.d_model, self.n_heads, self.n_layers, self.block_size).to(self.device)
 
     def next_batch(self):
@@ -176,14 +109,7 @@ class ShakespeareExperiment:
         y = torch.stack([self._train[i + 1:i + self.block_size + 1] for i in ix]).to(self.device)
         return x, y
 
-    def loss(self, model, batch):
+    def loss(self, model: nn.Module, batch) -> torch.Tensor:
         x, y = batch
         logits = model(x)
         return F.cross_entropy(logits.view(-1, self.vocab_size), y.view(-1))
-
-
-EXPERIMENTS = {
-    "linear_regression": LinearRegressionExperiment,
-    "matrix_factorization": MatrixFactorizationExperiment,
-    "shakespeare": ShakespeareExperiment,
-}

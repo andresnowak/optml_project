@@ -10,6 +10,7 @@ dependencies = [
   "wandb>=0.26.1",
   "jupyter>=1.1.1",
   "pytest>=9.0.3",
+  "pyyaml",
   "metalcore",
 ]
 

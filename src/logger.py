@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
 
 import torch
 import wandb
@@ -16,6 +17,22 @@ class BaseLogger(ABC):
     def finish(self) -> None: ...
 
     def start_run(self, name: str, config: dict | None = None, metric_prefix: str = "") -> None:
+        pass
+
+
+class MemoryLogger(BaseLogger):
+    """In-memory sink for batch sweeps; tensor metrics (e.g. SVD logs) are dropped."""
+
+    def __init__(self) -> None:
+        self.history: dict[str, list[tuple[int, float]]] = defaultdict(list)
+
+    def log(self, metrics: dict, step: int) -> None:
+        for name, value in metrics.items():
+            if isinstance(value, torch.Tensor):
+                continue
+            self.history[name].append((step, float(value)))
+
+    def finish(self) -> None:
         pass
 
 

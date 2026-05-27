@@ -1,0 +1,48 @@
+{
+  "experiment": "matrix_factorization",
+  "lr": 0.1,
+  "steps": 30,
+  "variants": {
+    "top_k=0 (no-SAV / paper tail)": {
+      "opt_kwargs": {
+        "top_k": 0,
+        "gate_threshold": 0.0
+      },
+      "score": 2.5741665363311768,
+      "final_loss": 2.5741665363311768
+    },
+    "top_k=1": {
+      "opt_kwargs": {
+        "top_k": 1,
+        "gate_threshold": 0.0
+      },
+      "score": 2.78165864944458,
+      "final_loss": 2.78165864944458
+    },
+    "top_k=6 (paper default)": {
+      "opt_kwargs": {
+        "top_k": 6,
+        "gate_threshold": 0.0
+      },
+      "score": 0.7041701674461365,
+      "final_loss": 0.7041701674461365
+    },
+    "top_k=32": {
+      "opt_kwargs": {
+        "top_k": 32,
+        "gate_threshold": 0.0
+      },
+      "score": 1.5143673419952393,
+      "final_loss": 1.5143673419952393
+    },
+    "gated (\u03c4=0.05, k=6)": {
+      "opt_kwargs": {
+        "top_k": 6,
+        "gate_threshold": 0.05,
+        "gate_window": 10
+      },
+      "score": 2.0375993251800537,
+      "final_loss": 2.0375993251800537
+    }
+  }
+}

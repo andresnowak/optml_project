@@ -1,0 +1,13 @@
+extends: _base.yaml
+
+experiment: shakespeare
+block_size: 128
+d_model: 128
+n_heads: 4
+n_layers: 4
+
+batch_size: 64
+steps: 1000
+log_every: 50
+optimizer: adamw
+lr: 3.0e-4

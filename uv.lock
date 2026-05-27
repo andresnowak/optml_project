@@ -1328,6 +1328,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "metalcore" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "torch" },
     { name = "wandb" },
 ]
@@ -1338,6 +1339,7 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "metalcore", git = "https://github.com/myfykris/metalcore?subdirectory=packages%2Fmetalcore&rev=4b6ffe6c1cf2bc6e8dbd9c7f9d0ee5ecbdaf79be" },
     { name = "pytest", specifier = ">=9.0.3" },
+    { name = "pyyaml" },
     { name = "torch", specifier = ">=2.9,<2.11" },
     { name = "wandb", specifier = ">=0.26.1" },
 ]
