@@ -95,8 +95,10 @@ class MatplotlibLogger(BaseLogger):
 
 
 class WandbLogger(BaseLogger):
-    def __init__(self, project: str, config: dict | None = None, svd_top_k: int | None = None):
+    def __init__(self, project: str, entity: str | None = None,
+                 config: dict | None = None, svd_top_k: int | None = None):
         self._project = project
+        self._entity = entity
         self._base_config = config or {}
         self.svd_top_k = svd_top_k
         self._run_active = False
@@ -105,7 +107,7 @@ class WandbLogger(BaseLogger):
     def start_run(self, name: str, config: dict | None = None, metric_prefix: str = "") -> None:
         if self._run_active:
             wandb.finish()
-        wandb.init(project=self._project, name=name,
+        wandb.init(project=self._project, entity=self._entity, name=name,
                    config=config if config is not None else self._base_config)
         self._run_active = True
         self._metric_prefix = metric_prefix
@@ -142,6 +144,7 @@ def make_logger(backend: str | None, title: str, **kwargs) -> BaseLogger | None:
     if backend == "wandb":
         return WandbLogger(
             project=kwargs["wandb_project"],
+            entity=kwargs.get("wandb_entity"),
             config=kwargs.get("config", {}),
             svd_top_k=kwargs.get("svd_top_k"),
         )

@@ -16,7 +16,8 @@ uv sync
 Optional `.env`:
 
 ```bash
-WANDB_PROJECT=optml-bench
+WANDB_PROJECT=mlo-specmuon
+WANDB_ENTITY=cs-439-project
 ```
 
 ## Running
@@ -124,7 +125,7 @@ uv run python main.py --optimizer specmuon \
 | `--svd-every N` | SVD logging frequency (default: same as `--log-every`) |
 | `--svd-top-k K` | only show top-k singular values |
 
-`--wandb-project` defaults to `WANDB_PROJECT` from `.env`, then falls back to `optml-bench`.
+`--wandb-project` and `--wandb-entity` default to `WANDB_PROJECT` / `WANDB_ENTITY` from `.env`, then fall back to `mlo-specmuon` / `cs-439-project`.
 
 ## Mechanism-isolation scripts
 

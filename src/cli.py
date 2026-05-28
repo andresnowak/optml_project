@@ -265,7 +265,12 @@ def _build_parser() -> argparse.ArgumentParser:
     log_group.add_argument("--log-scale", action="store_true", help="Log y-axis (matplotlib).")
     log_group.add_argument("--smooth", type=int, default=1, help="Rolling-mean window (matplotlib).")
     log_group.add_argument("--save-plot", type=str, default=None, metavar="PATH")
-    log_group.add_argument("--wandb-project", type=str, default=os.getenv("WANDB_PROJECT", "optml-bench"))
+    log_group.add_argument("--wandb-project", type=str,
+                           default=os.getenv("WANDB_PROJECT", "mlo-specmuon"),
+                           help="WandB project name. Defaults to $WANDB_PROJECT or 'mlo-specmuon'.")
+    log_group.add_argument("--wandb-entity", type=str,
+                           default=os.getenv("WANDB_ENTITY", "cs-439-project"),
+                           help="WandB entity / team. Defaults to $WANDB_ENTITY or 'cs-439-project'.")
 
     modes = parser.add_argument_group("modes")
     modes.add_argument("--compare-all", action="store_true", help="Run all optimizers at --lr.")
@@ -338,7 +343,9 @@ def main() -> None:
                          if getattr(args, k, None) is not None}
 
     logger_kwargs = dict(log_scale=args.log_scale, smooth=args.smooth,
-                         save_path=args.save_plot, wandb_project=args.wandb_project,
+                         save_path=args.save_plot,
+                         wandb_project=args.wandb_project,
+                         wandb_entity=args.wandb_entity,
                          config=vars(args), svd_top_k=args.svd_top_k)
 
     def reset_seeds() -> None:

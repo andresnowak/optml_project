@@ -25,7 +25,8 @@ svd_top_k: null
 log_scale: false
 smooth: 1
 save_plot: null
-wandb_project: optml-bench
+wandb_project: mlo-specmuon
+wandb_entity: cs-439-project
 
 # modes (mutually exclusive) ────────────────────────────────────────────────
 compare_all: false
