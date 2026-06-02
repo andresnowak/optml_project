@@ -1,0 +1,48 @@
+{
+  "experiment": "shakespeare",
+  "lr": 0.0003,
+  "steps": 2000,
+  "variants": {
+    "top_k=0 (no-SAV / paper tail)": {
+      "opt_kwargs": {
+        "top_k": 0,
+        "gate_threshold": 0.0
+      },
+      "score": 2.4320335388183594,
+      "final_loss": 2.4395079612731934
+    },
+    "top_k=1": {
+      "opt_kwargs": {
+        "top_k": 1,
+        "gate_threshold": 0.0
+      },
+      "score": 2.4298346042633057,
+      "final_loss": 2.4377434253692627
+    },
+    "top_k=6 (paper default)": {
+      "opt_kwargs": {
+        "top_k": 6,
+        "gate_threshold": 0.0
+      },
+      "score": 2.3339948654174805,
+      "final_loss": 2.339323043823242
+    },
+    "top_k=32": {
+      "opt_kwargs": {
+        "top_k": 32,
+        "gate_threshold": 0.0
+      },
+      "score": 1.8474149703979492,
+      "final_loss": 1.90323805809021
+    },
+    "gated (\u03c4=0.05, k=6)": {
+      "opt_kwargs": {
+        "top_k": 6,
+        "gate_threshold": 0.05,
+        "gate_window": 10
+      },
+      "score": 2.3367462158203125,
+      "final_loss": 2.342176914215088
+    }
+  }
+}

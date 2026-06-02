@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
+
+import numpy as np
 
 import torch
 import wandb
@@ -16,6 +19,22 @@ class BaseLogger(ABC):
     def finish(self) -> None: ...
 
     def start_run(self, name: str, config: dict | None = None, metric_prefix: str = "") -> None:
+        pass
+
+
+class MemoryLogger(BaseLogger):
+    """In-memory sink for batch sweeps; tensor metrics (e.g. SVD logs) are dropped."""
+
+    def __init__(self) -> None:
+        self.history: dict[str, list[tuple[int, float]]] = defaultdict(list)
+
+    def log(self, metrics: dict, step: int) -> None:
+        for name, value in metrics.items():
+            if isinstance(value, torch.Tensor):
+                continue
+            self.history[name].append((step, float(value)))
+
+    def finish(self) -> None:
         pass
 
 
@@ -78,8 +97,10 @@ class MatplotlibLogger(BaseLogger):
 
 
 class WandbLogger(BaseLogger):
-    def __init__(self, project: str, config: dict | None = None, svd_top_k: int | None = None):
+    def __init__(self, project: str, entity: str | None = None,
+                 config: dict | None = None, svd_top_k: int | None = None):
         self._project = project
+        self._entity = entity
         self._base_config = config or {}
         self.svd_top_k = svd_top_k
         self._run_active = False
@@ -88,7 +109,7 @@ class WandbLogger(BaseLogger):
     def start_run(self, name: str, config: dict | None = None, metric_prefix: str = "") -> None:
         if self._run_active:
             wandb.finish()
-        wandb.init(project=self._project, name=name,
+        wandb.init(project=self._project, entity=self._entity, name=name,
                    config=config if config is not None else self._base_config)
         self._run_active = True
         self._metric_prefix = metric_prefix
@@ -98,11 +119,20 @@ class WandbLogger(BaseLogger):
         for name, value in metrics.items():
             name = name.removeprefix(self._metric_prefix)
             if isinstance(value, torch.Tensor):
-                svs = value.cpu().numpy()
+                svs = value.detach().float().cpu().numpy().reshape(-1)
                 n_svs = len(svs) if self.svd_top_k is None else min(self.svd_top_k, len(svs))
                 for i in range(n_svs):
                     payload[f"{name}/sigma_{i + 1}"] = float(svs[i])
-                payload[f"{name}/spectrum"] = wandb.Histogram(svs)
+                finite_svs = svs[np.isfinite(svs)]
+                if finite_svs.size:
+                    data_range = float(finite_svs.max() - finite_svs.min())
+                    if not np.isfinite(data_range) or np.isclose(data_range, 0.0):
+                        payload[f"{name}/spectrum"] = wandb.Histogram(finite_svs, num_bins=1)
+                    else:
+                        try:
+                            payload[f"{name}/spectrum"] = wandb.Histogram(finite_svs)
+                        except ValueError:
+                            payload[f"{name}/spectrum"] = wandb.Histogram(finite_svs, num_bins=1)
             else:
                 payload[name] = value
         wandb.log(payload, step=step)
@@ -125,6 +155,7 @@ def make_logger(backend: str | None, title: str, **kwargs) -> BaseLogger | None:
     if backend == "wandb":
         return WandbLogger(
             project=kwargs["wandb_project"],
+            entity=kwargs.get("wandb_entity"),
             config=kwargs.get("config", {}),
             svd_top_k=kwargs.get("svd_top_k"),
         )

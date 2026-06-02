@@ -10,22 +10,71 @@ import torch
 
 from src.experiments import EXPERIMENTS
 from src.logger import make_logger
-from src.optimizers import OPTIMIZERS
-from src.training import train
+from src.optimizers import OPTIMIZER_KWARGS, OPTIMIZERS
+from src.training import TrainConfig, train
+from src.utils import select_device
+
+
+# `optimizers` is derived from OPTIMIZER_KWARGS so it stays in sync as new
+# optimizer kwargs land. `lr` and `weight_decay` are always sweepable.
+def _optimizers_accepting(kwarg: str) -> set[str]:
+    return {name for name, kws in OPTIMIZER_KWARGS.items() if kwarg in kws}
 
 
 SWEEP_SPECS = {
     "lr": {"type": float},
     "weight_decay": {"type": float},
-    "momentum": {"type": float, "optimizers": {"sgd", "muon", "specmuon"}},
-    "beta1": {"type": float, "optimizers": {"adam", "adamw"}},
-    "beta2": {"type": float, "optimizers": {"adam", "adamw"}},
-    "eps": {"type": float, "optimizers": {"adam", "adamw", "specmuon"}},
-    "ns_steps": {"type": int, "optimizers": {"muon"}},
-    "top_k": {"type": int, "optimizers": {"specmuon"}},
-    "sav_smooth": {"type": float, "optimizers": {"specmuon"}},
-    "adjust_lr_fn": {"type": str, "choices": {"shape_scaling"}, "optimizers": {"muon", "specmuon"}},
+    "momentum": {"type": float, "optimizers": _optimizers_accepting("momentum")},
+    "beta1": {"type": float, "optimizers": _optimizers_accepting("betas")},
+    "beta2": {"type": float, "optimizers": _optimizers_accepting("betas")},
+    "eps": {"type": float, "optimizers": _optimizers_accepting("eps")},
+    "ns_steps": {"type": int, "optimizers": _optimizers_accepting("ns_steps")},
+    "top_k": {"type": int, "optimizers": _optimizers_accepting("top_k")},
+    "sav_smooth": {"type": float, "optimizers": _optimizers_accepting("sav_smooth")},
+    "kappa": {"type": float, "optimizers": _optimizers_accepting("kappa")},
+    "adjust_lr_fn": {"type": str, "choices": {"shape_scaling"},
+                     "optimizers": _optimizers_accepting("adjust_lr_fn")},
+    "sigma_mode": {"type": str,
+                   "choices": {"baseline", "sqrt", "power", "clip", "truncate", "energy"},
+                   "optimizers": _optimizers_accepting("sigma_mode")},
+    "sigma_clip": {"type": float, "optimizers": _optimizers_accepting("sigma_clip")},
+    "sigma_truncate": {"type": float, "optimizers": _optimizers_accepting("sigma_truncate")},
+    "power_beta": {"type": float, "optimizers": _optimizers_accepting("power_beta")},
+    "energy_threshold": {"type": float, "optimizers": _optimizers_accepting("energy_threshold")},
+    "gate_window": {"type": int, "optimizers": _optimizers_accepting("gate_window")},
+    "gate_threshold": {"type": float, "optimizers": _optimizers_accepting("gate_threshold")},
 }
+
+
+# CLI flag → optimizer kwarg name. Drives `_validate_optimizer_flags` so a new
+# kwarg just needs an entry here (and in `OPTIMIZER_KWARGS`) — no per-optimizer
+# branching to update.
+_FLAG_TO_KWARG: dict[str, str] = {
+    "--top-k": "top_k",
+    "--sav-smooth": "sav_smooth",
+    "--kappa": "kappa",
+    "--adjust-lr-fn": "adjust_lr_fn",
+    "--sigma-mode": "sigma_mode",
+    "--sigma-clip": "sigma_clip",
+    "--sigma-truncate": "sigma_truncate",
+    "--power-beta": "power_beta",
+    "--energy-threshold": "energy_threshold",
+    "--gate-window": "gate_window",
+    "--gate-threshold": "gate_threshold",
+    "--ns-steps": "ns_steps",
+    "--momentum": "momentum",
+    "--beta1": "betas",
+    "--beta2": "betas",
+    "--eps": "eps",
+}
+
+
+# Args that flow into experiment_kwargs (filtered against the experiment class signature in train()).
+EXPERIMENT_FIELDS = frozenset({
+    "feature_dim", "output_dim", "samples",
+    "matrix_rows", "matrix_cols", "rank",
+    "block_size", "d_model", "n_heads", "n_layers",
+})
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -97,10 +146,54 @@ def assert_optimizer_supports_params(optimizer_name: str, param_names: set[str])
             )
 
 
-def main() -> None:
-    load_dotenv()
+def _run_compare_best_lr(args, run_paired, logger) -> None:
+    """Per-optimizer lr sweep (silent), then re-run each at its winning lr.
 
+    Uses `score_losses` (min over the last 10% of training) as the rank,
+    breaking ties in favor of earlier-min trajectories within ``compare_rtol``.
+    """
+    from src.utils import score_losses
+    lrs = np.logspace(np.log10(args.lr_min), np.log10(args.lr_max), args.lr_n)
+    rtol = args.compare_rtol
+    for name in sorted(OPTIMIZERS):
+        print(f"── sweeping {name} ──")
+        best_losses: list[float] | None = None
+        best_lr: float | None = None
+        for lr in lrs:
+            losses = run_paired(name, logger=None, run_name=None, overrides={"lr": float(lr)})
+            curr = score_losses(losses)
+            best = score_losses(best_losses) if best_losses is not None else float("inf")
+            if (best_losses is None
+                    or curr < best
+                    or (curr < best * (1 + rtol)
+                        and np.argmin(losses) < np.argmin(best_losses))):
+                best_losses, best_lr = losses, float(lr)
+        assert best_losses is not None and best_lr is not None
+        print(f"   → best lr={best_lr:.2e}  final loss={best_losses[-1]:.6f}")
+        run_paired(name, logger=logger, run_name=f"{name} lr={best_lr:.2e}",
+                   overrides={"lr": best_lr})
+
+
+def _validate_optimizer_flags(args, parser) -> None:
+    """Reject CLI flags that don't apply to the chosen optimizer.
+
+    Data-driven from `OPTIMIZER_KWARGS` and `_FLAG_TO_KWARG`. Skipped in
+    `--compare-all` mode where we cycle through optimizers and `build_optimizer`
+    filters silently.
+    """
+    if args.compare_all:
+        return
+    accepted = OPTIMIZER_KWARGS[args.optimizer]
+    for flag, kwarg in _FLAG_TO_KWARG.items():
+        val = getattr(args, flag.lstrip("-").replace("-", "_"))
+        if val is not None and kwarg not in accepted:
+            parser.error(f"{flag} can only be used with optimizers that accept '{kwarg}'.")
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Optimizer convergence benchmarks.")
+    parser.add_argument("--config", type=str, default=None,
+                        help="YAML config file. Values become argparse defaults; CLI flags override.")
 
     exp = parser.add_argument_group("experiment")
     exp.add_argument("--experiment", choices=sorted(EXPERIMENTS), default="linear_regression")
@@ -131,13 +224,42 @@ def main() -> None:
     opt.add_argument("--ns-steps", type=int, default=None, help="Newton-Schulz iterations (Muon).")
     opt.add_argument("--top-k", type=int, default=None, help="Top-k SAV singular directions (SpecMuon).")
     opt.add_argument("--sav-smooth", type=float, default=None, help="SAV smoothing factor ξ (SpecMuon).")
-    opt.add_argument("--adjust-lr-fn", choices=("shape_scaling",), default=None, help="Repo-controlled LR scaling mode (Muon / SpecMuon).")
+    opt.add_argument("--kappa", type=float, default=None,
+                     help="Loss-shift constant κ ≥ 0 for SpecMuon (paper §2.1). Default 0.")
+    opt.add_argument("--adjust-lr-fn", choices=("shape_scaling",), default=None,
+                     help="Repo-controlled LR scaling mode (Muon / SpecMuon).")
+    opt.add_argument("--sigma-mode",
+                     choices=("power", "clip", "truncate", "energy", "baseline", "sqrt"),
+                     default=None,
+                     help="σ-intervention for SpecMuon step size. "
+                          "`baseline` and `sqrt` are aliases for power(β=1) and power(β=0.5).")
+    opt.add_argument("--sigma-clip", type=float, default=None,
+                     help="Step-size cap for --sigma-mode clip.")
+    opt.add_argument("--sigma-truncate", type=float, default=None,
+                     help="Relative threshold for --sigma-mode truncate.")
+    opt.add_argument("--power-beta", type=float, default=None,
+                     help="β exponent for --sigma-mode power (β=1 is baseline, β=0.5 is sqrt).")
+    opt.add_argument("--energy-threshold", type=float, default=None,
+                     help="Cumulative-energy threshold τ for --sigma-mode energy.")
+    opt.add_argument("--gate-window", type=int, default=None,
+                     help="SAV-gating rolling window size (SpecMuon).")
+    opt.add_argument("--gate-threshold", type=float, default=None,
+                     help="SAV-gating threshold τ on rolling relative loss drop. "
+                          "0 disables gating (paper default, always-on SAV).")
 
     log_group = parser.add_argument_group("logging")
     log_group.add_argument("--backend", choices=("matplotlib", "wandb"), default=None,
                            help="Logging backend. Omit for console-only output.")
     log_group.add_argument("--log-grad-svd", action="store_true",
                            help="Log singular values of parameter gradients.")
+    log_group.add_argument("--log-sav-r", action="store_true",
+                           help="Log SpecMuon SAV r-tracker and last_iota diagnostic.")
+    log_group.add_argument("--checkpoint-dir", type=str, default=None,
+                           help="Directory to write model+optimizer checkpoints "
+                                "(.pt files). Final-step checkpoint always written if set.")
+    log_group.add_argument("--checkpoint-every", type=int, default=None,
+                           help="Save intermediate checkpoint every N steps "
+                                "(in addition to the final one). Requires --checkpoint-dir.")
     log_group.add_argument("--log-grad-norms", action="store_true",
                            help="Log per-parameter gradient norms and total gradient norm.")
     log_group.add_argument("--log-weight-norms", action="store_true",
@@ -149,22 +271,53 @@ def main() -> None:
     log_group.add_argument("--log-scale", action="store_true", help="Log y-axis (matplotlib).")
     log_group.add_argument("--smooth", type=int, default=1, help="Rolling-mean window (matplotlib).")
     log_group.add_argument("--save-plot", type=str, default=None, metavar="PATH")
-    log_group.add_argument("--wandb-project", type=str, default=os.getenv("WANDB_PROJECT", "optml-bench"))
+    log_group.add_argument("--wandb-project", type=str,
+                           default=os.getenv("WANDB_PROJECT", "mlo-specmuon"),
+                           help="WandB project name. Defaults to $WANDB_PROJECT or 'mlo-specmuon'.")
+    log_group.add_argument("--wandb-entity", type=str,
+                           default=os.getenv("WANDB_ENTITY", "cs-439-project"),
+                           help="WandB entity / team. Defaults to $WANDB_ENTITY or 'cs-439-project'.")
 
     modes = parser.add_argument_group("modes")
     modes.add_argument("--compare-all", action="store_true", help="Run all optimizers at --lr.")
     modes.add_argument("--sweep-lr", action="store_true", help="Sweep lr over a log-spaced grid.")
     modes.add_argument("--sweep", action="append", default=[], metavar="PARAM=V1,V2,...",
                        help="Sweep one or more hyperparameters. Repeat to run a grid sweep.")
+    modes.add_argument("--compare-best-lr", action="store_true",
+                       help="Per-optimizer lr sweep, then compare each at its winning lr.")
     modes.add_argument("--lr-min", type=float, default=1e-4)
     modes.add_argument("--lr-max", type=float, default=1.0)
     modes.add_argument("--lr-n", type=int, default=8)
+    modes.add_argument("--compare-rtol", type=float, default=0.01,
+                       help="Relative tolerance for --compare-best-lr tiebreak (prefers earlier-min).")
+    return parser
+
+
+def main() -> None:
+    import sys
+    load_dotenv()
+
+    parser = _build_parser()
+
+    # Pre-parse for --config so its values become defaults before the real parse.
+    pre, _ = parser.parse_known_args()
+    if pre.config is not None:
+        from src.utils import load_config
+        if not os.path.exists(pre.config):
+            parser.error(f"--config file not found: {pre.config}")
+        cfg = load_config(pre.config)
+        valid = {a.dest for a in parser._actions}
+        unknown = set(cfg) - valid
+        if unknown:
+            parser.error(f"{pre.config}: unknown keys {sorted(unknown)}")
+        parser.set_defaults(**cfg)
+        print(f"Loaded config from {pre.config}", file=sys.stderr)
 
     args = parser.parse_args()
 
-    active_modes = [args.sweep_lr, bool(args.sweep), args.compare_all]
+    active_modes = [args.sweep_lr, bool(args.sweep), args.compare_all, args.compare_best_lr]
     if sum(active_modes) > 1:
-        parser.error("--sweep-lr, --sweep, and --compare-all are mutually exclusive.")
+        parser.error("--sweep-lr, --sweep, --compare-all, and --compare-best-lr are mutually exclusive.")
     if args.lr_min >= args.lr_max:
         parser.error("--lr-min must be less than --lr-max.")
     if args.lr_n < 2:
@@ -174,12 +327,7 @@ def main() -> None:
     if args.steps < 1:
         parser.error("--steps must be at least 1.")
 
-    _specmuon_only = {"--top-k": args.top_k, "--sav-smooth": args.sav_smooth}
-    _muon_family = {"--adjust-lr-fn": args.adjust_lr_fn}
-    _muon_only = {"--ns-steps": args.ns_steps}
-    _muon_like = {"--momentum": args.momentum}
     sweep_params: dict[str, list[object]] = {}
-
     try:
         for raw in args.sweep:
             name, values = parse_sweep_arg(raw)
@@ -187,58 +335,36 @@ def main() -> None:
     except ValueError as exc:
         parser.error(str(exc))
 
+    _validate_optimizer_flags(args, parser)
+
     if not args.compare_all:
-        for flag, val in _specmuon_only.items():
-            if val is not None and args.optimizer != "specmuon":
-                parser.error(f"{flag} can only be used with --optimizer specmuon.")
-        for flag, val in _muon_only.items():
-            if val is not None and args.optimizer not in ("muon", "specmuon"):
-                parser.error(f"{flag} can only be used with --optimizer muon or specmuon.")
-        for flag, val in _muon_family.items():
-            if val is not None and args.optimizer not in ("muon", "specmuon"):
-                parser.error(f"{flag} can only be used with --optimizer muon or specmuon.")
-        for flag, val in _muon_like.items():
-            if val is not None and args.optimizer not in ("muon", "specmuon", "sgd"):
-                parser.error(f"{flag} can only be used with --optimizer muon, specmuon, or sgd.")
         for name in sweep_params:
             allowed = SWEEP_SPECS[name].get("optimizers")
             if allowed is not None and args.optimizer not in allowed:
                 parser.error(f"--sweep {name}=... can only be used with --optimizer {', '.join(sorted(allowed))}.")
 
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() else
-        "mps" if torch.backends.mps.is_available() else
-        "cpu"
-    ) if args.device == "auto" else torch.device(args.device)
+    device = select_device(args.device)
 
-    common = dict(
-        experiment_name=args.experiment,
-        device=device,
-        steps=args.steps,
-        batch_size=args.batch_size,
-        log_every=args.log_every,
-        feature_dim=args.feature_dim,
-        output_dim=args.output_dim,
-        samples=args.samples,
-        matrix_rows=args.matrix_rows,
-        matrix_cols=args.matrix_cols,
-        rank=args.rank,
-        block_size=args.block_size,
-        d_model=args.d_model,
-        n_heads=args.n_heads,
-        n_layers=args.n_layers,
-        log_grad_svd=args.log_grad_svd,
-        svd_every=args.svd_every,
-        log_grad_norms=args.log_grad_norms,
-        log_weight_norms=args.log_weight_norms,
-    )
+    experiment_kwargs = {k: getattr(args, k, None) for k in EXPERIMENT_FIELDS
+                         if getattr(args, k, None) is not None}
 
     logger_kwargs = dict(log_scale=args.log_scale, smooth=args.smooth,
-                         save_path=args.save_plot, wandb_project=args.wandb_project,
+                         save_path=args.save_plot,
+                         wandb_project=args.wandb_project,
+                         wandb_entity=args.wandb_entity,
                          config=vars(args), svd_top_k=args.svd_top_k)
+
     def reset_seeds() -> None:
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
+
+    # All optimizer kwargs flowing from CLI flags. `betas` is composed
+    # separately from --beta1/--beta2. Drives `build_run_settings`.
+    _OPT_KWARG_FIELDS = (
+        "momentum", "ns_steps", "top_k", "sav_smooth", "kappa",
+        "adjust_lr_fn", "sigma_mode", "sigma_clip", "sigma_truncate",
+        "power_beta", "energy_threshold", "gate_window", "gate_threshold", "eps",
+    )
 
     def build_run_settings(overrides: dict[str, object]) -> tuple[float, float, dict]:
         assert_optimizer_supports_params(args.optimizer, set(overrides))
@@ -248,26 +374,12 @@ def main() -> None:
         beta2 = float(overrides.get("beta2", args.beta2 if args.beta2 is not None else 0.999))
 
         opt_kwargs: dict = {}
-        momentum = overrides.get("momentum", args.momentum)
-        if momentum is not None:
-            opt_kwargs["momentum"] = momentum
-        ns_steps = overrides.get("ns_steps", args.ns_steps)
-        if ns_steps is not None:
-            opt_kwargs["ns_steps"] = ns_steps
-        top_k = overrides.get("top_k", args.top_k)
-        if top_k is not None:
-            opt_kwargs["top_k"] = top_k
-        sav_smooth = overrides.get("sav_smooth", args.sav_smooth)
-        if sav_smooth is not None:
-            opt_kwargs["sav_smooth"] = sav_smooth
-        adjust_lr_fn = overrides.get("adjust_lr_fn", args.adjust_lr_fn)
-        if adjust_lr_fn is not None:
-            opt_kwargs["adjust_lr_fn"] = adjust_lr_fn
+        for key in _OPT_KWARG_FIELDS:
+            val = overrides.get(key, getattr(args, key))
+            if val is not None:
+                opt_kwargs[key] = val
         if args.beta1 is not None or args.beta2 is not None or "beta1" in overrides or "beta2" in overrides:
             opt_kwargs["betas"] = (beta1, beta2)
-        eps = overrides.get("eps", args.eps)
-        if eps is not None:
-            opt_kwargs["eps"] = eps
         return lr, weight_decay, opt_kwargs
 
     def run_paired(
@@ -287,15 +399,26 @@ def main() -> None:
                           "batch_size": args.batch_size, **opt_kwargs}
             metric_prefix = f"{run_name}/" if run_name else ""
             logger.start_run(wandb_name, run_config, metric_prefix=metric_prefix)
-        return train(
+        cfg = TrainConfig(
+            experiment_name=args.experiment,
             optimizer_name=optimizer_name,
+            device=device,
+            steps=args.steps,
             lr=lr,
             weight_decay=weight_decay,
+            batch_size=args.batch_size,
+            log_every=args.log_every,
+            experiment_kwargs=experiment_kwargs,
             opt_kwargs=opt_kwargs,
-            logger=logger,
-            run_name=run_name,
-            **common,
+            log_grad_svd=args.log_grad_svd,
+            log_grad_norms=args.log_grad_norms,
+            log_weight_norms=args.log_weight_norms,
+            log_sav_r=args.log_sav_r,
+            svd_every=args.svd_every,
+            checkpoint_dir=args.checkpoint_dir,
+            checkpoint_every=args.checkpoint_every,
         )
+        return train(cfg, log_sink=logger, run_name=run_name)
 
     def iter_sweep_overrides() -> list[dict[str, object]]:
         if args.sweep_lr:
@@ -312,10 +435,9 @@ def main() -> None:
     mode = (
         "sweep" if args.sweep_lr or args.sweep else
         "compare_all" if args.compare_all else
+        "compare_best_lr" if args.compare_best_lr else
         "single"
     )
-    assert (mode == "compare_all") == args.compare_all
-    assert (mode == "sweep") == bool(args.sweep_lr or args.sweep)
     title = {
         "sweep": (
             f"Grid sweep — {args.experiment} / {args.optimizer}"
@@ -323,22 +445,22 @@ def main() -> None:
             f"Sweep {next(iter(sweep_params), 'lr')} — {args.experiment} / {args.optimizer}"
         ),
         "compare_all": f"Optimizer comparison — {args.experiment}",
+        "compare_best_lr": f"Best-lr comparison — {args.experiment}",
         "single": f"{args.experiment} / {args.optimizer}",
     }[mode]
     logger = make_logger(args.backend, title, **logger_kwargs)
 
     try:
         if mode == "sweep":
-            assert sweep_overrides, "sweep mode requires at least one override set"
             for overrides in sweep_overrides:
                 run_name = ", ".join(f"{name}={format_sweep_value(name, value)}" for name, value in overrides.items())
                 run_paired(args.optimizer, logger=logger, run_name=run_name, overrides=overrides)
         elif mode == "compare_all":
-            assert not args.sweep_lr and not args.sweep
             for name in sorted(OPTIMIZERS):
                 run_paired(name, logger=logger, run_name=name)
+        elif mode == "compare_best_lr":
+            _run_compare_best_lr(args, run_paired, logger)
         else:
-            assert not args.compare_all and not args.sweep_lr and not args.sweep
             run_paired(args.optimizer, logger=logger)
     finally:
         if logger:

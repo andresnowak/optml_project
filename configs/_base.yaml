@@ -1,0 +1,36 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Base config — shared defaults for every experiment.
+# ═══════════════════════════════════════════════════════════════════════════
+#  Per-experiment configs `extends: _base.yaml` and override only what differs.
+#  CLI flags override anything set here.
+
+# experiment ────────────────────────────────────────────────────────────────
+device: auto                              # auto | cpu | cuda | mps
+steps: 300
+batch_size: 128
+seed: 0
+log_every: 25
+
+# optimizer ─────────────────────────────────────────────────────────────────
+optimizer: specmuon                       # adam | adamw | sgd | muon | specmuon
+lr: 1.0e-2
+weight_decay: 0.0
+
+# logging ───────────────────────────────────────────────────────────────────
+backend: null                             # null | matplotlib | wandb
+log_grad_svd: false
+log_sav_r: false
+svd_every: null
+svd_top_k: null
+log_scale: false
+smooth: 1
+save_plot: null
+wandb_project: mlo-specmuon
+wandb_entity: cs-439-project
+
+# modes (mutually exclusive) ────────────────────────────────────────────────
+compare_all: false
+sweep_lr: false
+lr_min: 1.0e-4
+lr_max: 1.0
+lr_n: 8
