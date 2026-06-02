@@ -3,6 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import defaultdict
 
+import numpy as np
+
 import torch
 import wandb
 
@@ -117,11 +119,20 @@ class WandbLogger(BaseLogger):
         for name, value in metrics.items():
             name = name.removeprefix(self._metric_prefix)
             if isinstance(value, torch.Tensor):
-                svs = value.cpu().numpy()
+                svs = value.detach().float().cpu().numpy().reshape(-1)
                 n_svs = len(svs) if self.svd_top_k is None else min(self.svd_top_k, len(svs))
                 for i in range(n_svs):
                     payload[f"{name}/sigma_{i + 1}"] = float(svs[i])
-                payload[f"{name}/spectrum"] = wandb.Histogram(svs)
+                finite_svs = svs[np.isfinite(svs)]
+                if finite_svs.size:
+                    data_range = float(finite_svs.max() - finite_svs.min())
+                    if not np.isfinite(data_range) or np.isclose(data_range, 0.0):
+                        payload[f"{name}/spectrum"] = wandb.Histogram(finite_svs, num_bins=1)
+                    else:
+                        try:
+                            payload[f"{name}/spectrum"] = wandb.Histogram(finite_svs)
+                        except ValueError:
+                            payload[f"{name}/spectrum"] = wandb.Histogram(finite_svs, num_bins=1)
             else:
                 payload[name] = value
         wandb.log(payload, step=step)
