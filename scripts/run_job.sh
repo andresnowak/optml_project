@@ -64,12 +64,27 @@ BASE_FLAGS="--image ${IMAGE} --pvc home:${HOME} -e HOME=${HOME} --run-as-user --
 if [ -n "${WANDB_API_KEY:-}" ]; then
     BASE_FLAGS="${BASE_FLAGS} -e WANDB_API_KEY=${WANDB_API_KEY}"
 fi
+# Persistent local logs on the PVC (otherwise wandb falls back to /tmp and
+# its run cache is wiped when the pod terminates). The directory is created
+# lazily by wandb on first use.
+WANDB_DIR="${WANDB_DIR:-${HOME}/.wandb}"
+BASE_FLAGS="${BASE_FLAGS} -e WANDB_DIR=${WANDB_DIR}"
 
 # --- Per-invocation timestamp for unique RunAI job names ----------------
 # RunAI rejects a `runai submit --name X` if a job with that name still
 # exists in the namespace (even completed/failed ones). Stamp every job
 # in this invocation with a shared suffix to guarantee no collisions.
 JOB_STAMP="${JOB_STAMP:-$(date +%Y%m%d-%H%M%S)}"
+
+# --- Capture which vars the user explicitly set in the environment ----
+# Used by subcommands to decide whether to apply their own defaults vs.
+# defer to the user's override. `${X+set}` expands to "set" iff X is set
+# (even to empty), so we lock the answer BEFORE the defaults block below.
+for _v in CONFIG EXPERIMENT OPTIMIZER STEPS LR SEED LOG_EVERY \
+          TOP_K SIGMA_MODE GATE_THRESHOLD GATE_WINDOW KAPPA \
+          BACKEND LOG_SAV_R CHECKPOINT_DIR CHECKPOINT_EVERY; do
+    eval "_USER_${_v}=\"\${${_v}+set}\""
+done
 
 # --- Defaults (override via env vars) ----------------------------------
 # Experiment / training
@@ -93,6 +108,11 @@ BACKEND="${BACKEND:-wandb}"                   # null | matplotlib | wandb
 WANDB_PROJECT="${WANDB_PROJECT:-mlo-specmuon}"
 WANDB_ENTITY="${WANDB_ENTITY:-cs-439-project}"
 LOG_SAV_R="${LOG_SAV_R:-0}"                   # 1 ⇒ --log-sav-r
+
+# Checkpointing (on the PVC so checkpoints survive the pod). Off by default;
+# set CHECKPOINT_DIR to opt in, or use one of the subcommands that pins it.
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-}"           # e.g. ${HOME}/optml_checkpoints
+CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-}"       # intermediate save cadence; empty ⇒ end-only
 
 # Optional run tag — appears in the WandB run name AND the RunAI job name
 # so back-to-back jobs with otherwise identical configs don't visually merge.
@@ -125,6 +145,8 @@ _build_main_args() {
     _append_if_set "--gate-threshold" "${GATE_THRESHOLD}"
     _append_if_set "--gate-window" "${GATE_WINDOW}"
     _append_if_set "--kappa" "${KAPPA}"
+    _append_if_set "--checkpoint-dir" "${CHECKPOINT_DIR}"
+    _append_if_set "--checkpoint-every" "${CHECKPOINT_EVERY}"
     if [ "${LOG_SAV_R}" = "1" ]; then MAIN_ARGS+=(--log-sav-r); fi
 }
 
@@ -210,15 +232,19 @@ case "${1:-}" in
         # Priority 1(a) of the experimental program: does top_k=32 keep
         # descending past 2000 steps? Push 5× further with --log-sav-r so
         # the WandB curves answer the warmup-vs-sustained-mechanism question.
-        CONFIG="${CONFIG:-${PROJECT_DIR}/configs/shakespeare.yaml}"
+        # Apply subcommand defaults ONLY when the user didn't set the var
+        # explicitly — the top-level defaults above don't count.
+        [ -z "${_USER_CONFIG}"           ] && CONFIG="${PROJECT_DIR}/configs/shakespeare.yaml"
         EXPERIMENT=shakespeare
         OPTIMIZER=specmuon
-        TOP_K="${TOP_K:-32}"
-        LR="${LR:-3e-4}"
-        STEPS="${STEPS:-10000}"
-        LOG_EVERY="${LOG_EVERY:-100}"
+        [ -z "${_USER_TOP_K}"            ] && TOP_K=32
+        [ -z "${_USER_LR}"               ] && LR=3e-4
+        [ -z "${_USER_STEPS}"            ] && STEPS=10000
+        [ -z "${_USER_LOG_EVERY}"        ] && LOG_EVERY=100
         LOG_SAV_R=1
         BACKEND=wandb
+        [ -z "${_USER_CHECKPOINT_DIR}"   ] && CHECKPOINT_DIR="${HOME}/optml_checkpoints/shakespeare_long"
+        [ -z "${_USER_CHECKPOINT_EVERY}" ] && CHECKPOINT_EVERY=2000
         _build_main_args
         job_name="shakelong-top${TOP_K}${TAG_SUFFIX}-${JOB_STAMP}"
         _submit "${job_name}" "${MAIN_PY}" "${MAIN_ARGS[@]}"

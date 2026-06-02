@@ -254,6 +254,12 @@ def _build_parser() -> argparse.ArgumentParser:
                            help="Log singular values of parameter gradients.")
     log_group.add_argument("--log-sav-r", action="store_true",
                            help="Log SpecMuon SAV r-tracker and last_iota diagnostic.")
+    log_group.add_argument("--checkpoint-dir", type=str, default=None,
+                           help="Directory to write model+optimizer checkpoints "
+                                "(.pt files). Final-step checkpoint always written if set.")
+    log_group.add_argument("--checkpoint-every", type=int, default=None,
+                           help="Save intermediate checkpoint every N steps "
+                                "(in addition to the final one). Requires --checkpoint-dir.")
     log_group.add_argument("--log-grad-norms", action="store_true",
                            help="Log per-parameter gradient norms and total gradient norm.")
     log_group.add_argument("--log-weight-norms", action="store_true",
@@ -409,6 +415,8 @@ def main() -> None:
             log_weight_norms=args.log_weight_norms,
             log_sav_r=args.log_sav_r,
             svd_every=args.svd_every,
+            checkpoint_dir=args.checkpoint_dir,
+            checkpoint_every=args.checkpoint_every,
         )
         return train(cfg, log_sink=logger, run_name=run_name)
 

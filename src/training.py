@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -42,6 +43,8 @@ class TrainConfig:
     log_weight_norms: bool = False
     log_sav_r: bool = False
     svd_every: int | None = None
+    checkpoint_dir: str | None = None
+    checkpoint_every: int | None = None  # None = end-of-training only
 
     def with_(self, **changes: Any) -> "TrainConfig":
         return replace(self, **changes)
@@ -113,6 +116,35 @@ def train(
         f"experiment={config.experiment_name} optimizer={config.optimizer_name} "
         f"device={config.device.type} steps={config.steps}"
     )
+
+    ckpt_dir: Path | None = None
+    if config.checkpoint_dir is not None:
+        ckpt_dir = Path(config.checkpoint_dir)
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        print(f"checkpoints -> {ckpt_dir}")
+
+    def _save_ckpt(step: int, final: bool = False) -> None:
+        if ckpt_dir is None:
+            return
+        tag = "final" if final else f"step{step:06d}"
+        path = ckpt_dir / f"{config.experiment_name}_{config.optimizer_name}_seed{run_name or 'run'}_{tag}.pt"
+        payload: dict = {
+            "step": step,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "loss": losses[-1] if losses else None,
+            "config": {
+                "experiment": config.experiment_name,
+                "optimizer": config.optimizer_name,
+                "lr": config.lr,
+                "steps": config.steps,
+                "opt_kwargs": dict(config.opt_kwargs),
+            },
+        }
+        if adam_optimizer is not None:
+            payload["adam_optimizer"] = adam_optimizer.state_dict()
+        torch.save(payload, path)
+        print(f"  saved {path.name}")
 
     losses: list[float] = []
     for step in range(1, config.steps + 1):
@@ -192,4 +224,10 @@ def train(
                         step,
                     )
 
+        if (config.checkpoint_every is not None
+                and step % config.checkpoint_every == 0
+                and step != config.steps):
+            _save_ckpt(step)
+
+    _save_ckpt(config.steps, final=True)
     return losses
