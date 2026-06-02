@@ -41,7 +41,13 @@ USERNAME=$(whoami)
 IMAGE="${IMAGE:-pytorch/pytorch:2.9.0-cuda12.6-cudnn9-runtime}"
 
 # --- Project layout (on the home PVC, same path inside the container) -
-PROJECT_DIR="${PROJECT_DIR:-${HOME}/MDS/MLO/project}"
+# Auto-resolve PROJECT_DIR from THIS script's location (run_job.sh lives in
+# ${PROJECT_DIR}/scripts/), so we don't hard-code a path that may differ
+# from the actual repo location on the cluster PVC. The submitter's CWD is
+# irrelevant; what matters is where the repo lives on disk.
+# Override via the env var if you ever need to point at a different copy.
+_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="${PROJECT_DIR:-$(cd "${_SELF_DIR}/.." && pwd)}"
 MAIN_PY="${PROJECT_DIR}/main.py"
 SAV_ISO_PY="${PROJECT_DIR}/scripts/sav_isolation.py"
 GATE_SENS_PY="${PROJECT_DIR}/scripts/gate_sensitivity.py"
