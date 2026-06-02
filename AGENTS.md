@@ -124,3 +124,6 @@ uv run python main.py --experiment linear_regression --optimizer relmuon --steps
 ```
 
 For benchmark changes, prefer a fixed-seed run with `--scheduler cosine` and include final loss, best-seen loss, LR, scheduler, step count, and key optimizer settings in the result note.
+
+## References:
+- [Specmuon paper](https://arxiv.org/abs/2602.16167)
