@@ -45,9 +45,57 @@ class TrainConfig:
     svd_every: int | None = None
     checkpoint_dir: str | None = None
     checkpoint_every: int | None = None  # None = end-of-training only
+    specmuon_target: str = "all"          # "all" | "mlp" | "attention"
 
     def with_(self, **changes: Any) -> "TrainConfig":
         return replace(self, **changes)
+
+
+def _is_attention_param(name: str) -> bool:
+    """Heuristic: parameter belongs to a self-attention submodule.
+
+    Matches the naming conventions used in `src/experiments/shakespeare.py`
+    (`blocks.<i>.attn.qkv.weight`, `blocks.<i>.attn.proj.weight`). Also matches
+    the more general `.attention.` token used in other transformer codebases.
+    """
+    return ".attn." in name or ".attention." in name
+
+
+def _is_mlp_param(name: str) -> bool:
+    """Heuristic: parameter belongs to a feed-forward / MLP submodule.
+
+    Matches `blocks.<i>.mlp.fc{1,2}.weight` from the shakespeare model and
+    common synonyms (`.ffn.`, `.feedforward.`). The output `head` and the
+    embeddings are intentionally NOT classified as MLPs.
+    """
+    return ".mlp." in name or ".ffn." in name or ".feedforward." in name
+
+
+def _split_matrix_by_target(model: nn.Module, target: str) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
+    """Split 2-D+ matrix weights into (targeted, untargeted) for the
+    selective-SAV ablation. Non-matrix params (embeddings, LayerNorms,
+    biases) are handled separately by ``_split_params`` and not touched here.
+
+    ``target ∈ {"mlp", "attention"}``. The classification uses parameter
+    names — keep it consistent with the model's nn.Module naming or expect
+    the wrong routing. Output `head` and any other matrix that doesn't match
+    the selected predicate land in ``untargeted`` (they'll receive the
+    paper-tail SpecMuon update with ``top_k=0``).
+    """
+    if target not in ("mlp", "attention"):
+        raise ValueError(f"specmuon_target must be 'mlp' or 'attention', got {target!r}")
+    is_target = _is_mlp_param if target == "mlp" else _is_attention_param
+    name_of = {id(p): n for n, p in model.named_parameters()}
+    norm_or_emb = (nn.Embedding, nn.LayerNorm, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.GroupNorm)
+    targeted: list[nn.Parameter] = []
+    untargeted: list[nn.Parameter] = []
+    for module in model.modules():
+        for p in module.parameters(recurse=False):
+            if isinstance(module, norm_or_emb) or p.ndim < 2:
+                continue
+            name = name_of.get(id(p), "")
+            (targeted if is_target(name) else untargeted).append(p)
+    return targeted, untargeted
 
 
 def _split_params(
@@ -92,13 +140,35 @@ def train(
     experiment = cls(device=config.device, batch_size=config.batch_size, **exp_kwargs)
 
     model = experiment.build_model()
+    # ``aux_specmuon`` is the second SpecMuon used by the selective-SAV
+    # ablation: when ``specmuon_target ∈ {"mlp","attention"}`` it carries the
+    # *untargeted* matrix params with ``top_k=0`` (paper-tail-only update),
+    # while the primary ``optimizer`` carries the targeted ones with the
+    # user's full opt_kwargs. ``aux_specmuon`` is None in every other case.
+    aux_specmuon: torch.optim.Optimizer | None = None
     if config.optimizer_name in ("muon", "specmuon"):
         matrix_params, other_params = _split_params(
             model, accept_high_rank=(config.optimizer_name == "specmuon"),
         )
-        optimizer = build_optimizer(
-            config.optimizer_name, matrix_params, config.lr, config.weight_decay, **config.opt_kwargs
-        )
+        if config.optimizer_name == "specmuon" and config.specmuon_target != "all":
+            sav_params, tail_params = _split_matrix_by_target(model, config.specmuon_target)
+            if not sav_params:
+                raise ValueError(
+                    f"--specmuon-target={config.specmuon_target!r} matched no parameters; "
+                    f"check the model's nn.Module names against _is_{config.specmuon_target}_param."
+                )
+            optimizer = build_optimizer(
+                "specmuon", sav_params, config.lr, config.weight_decay, **config.opt_kwargs
+            )
+            if tail_params:
+                tail_kwargs = {**config.opt_kwargs, "top_k": 0}
+                aux_specmuon = build_optimizer(
+                    "specmuon", tail_params, config.lr, config.weight_decay, **tail_kwargs
+                )
+        else:
+            optimizer = build_optimizer(
+                config.optimizer_name, matrix_params, config.lr, config.weight_decay, **config.opt_kwargs
+            )
         adam_optimizer: torch.optim.Optimizer | None = (
             torch.optim.AdamW(other_params, lr=config.lr, weight_decay=config.weight_decay)
             if other_params else None
@@ -143,6 +213,8 @@ def train(
         }
         if adam_optimizer is not None:
             payload["adam_optimizer"] = adam_optimizer.state_dict()
+        if aux_specmuon is not None:
+            payload["aux_specmuon"] = aux_specmuon.state_dict()
         torch.save(payload, path)
         print(f"  saved {path.name}")
 
@@ -150,6 +222,8 @@ def train(
     for step in range(1, config.steps + 1):
         step_t0 = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
+        if aux_specmuon is not None:
+            aux_specmuon.zero_grad(set_to_none=True)
         if adam_optimizer is not None:
             adam_optimizer.zero_grad(set_to_none=True)
         batch = experiment.next_batch()
@@ -167,20 +241,28 @@ def train(
             optimizer.step(loss=loss)
         else:
             optimizer.step()
+        if aux_specmuon is not None:
+            # aux_specmuon is always a SpecMuon (top_k=0 paper-tail variant).
+            aux_specmuon.step(loss=loss)
         if adam_optimizer is not None:
             adam_optimizer.step()
 
         if (log_sink is not None and config.log_sav_r and isinstance(optimizer, SpecMuon)
                 and (step == 1 or step % svd_every == 0 or step == config.steps)):
+            # Look up state across BOTH SpecMuon optimizers — under the
+            # selective-SAV ablation each param lives in exactly one of them.
+            spec_opts = [optimizer] + ([aux_specmuon] if isinstance(aux_specmuon, SpecMuon) else [])
             for name, param in model.named_parameters():
-                pstate = optimizer.state.get(param)
-                if pstate is not None and "r" in pstate:
-                    log_sink.log({f"{prefix}sav_r/{name}": pstate["r"].detach()}, step)
-                    if "last_iota" in pstate:
-                        log_sink.log({
-                            f"{prefix}sav_iota/{name}": pstate["last_iota"],
-                            f"{prefix}sav_iota_w/{name}": pstate["last_iota_w"],
-                        }, step)
+                for opt in spec_opts:
+                    pstate = opt.state.get(param)
+                    if pstate is not None and "r" in pstate:
+                        log_sink.log({f"{prefix}sav_r/{name}": pstate["r"].detach()}, step)
+                        if "last_iota" in pstate:
+                            log_sink.log({
+                                f"{prefix}sav_iota/{name}": pstate["last_iota"],
+                                f"{prefix}sav_iota_w/{name}": pstate["last_iota_w"],
+                            }, step)
+                        break
 
         step_dt = time.perf_counter() - step_t0
 

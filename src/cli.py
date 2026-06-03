@@ -146,6 +146,18 @@ def assert_optimizer_supports_params(optimizer_name: str, param_names: set[str])
             )
 
 
+def _selected_optimizers(args) -> list[str]:
+    """Optimizer subset for compare-all / compare-best-lr."""
+    if args.compare_optimizers:
+        names = [n.strip() for n in args.compare_optimizers.split(",") if n.strip()]
+        unknown = [n for n in names if n not in OPTIMIZERS]
+        if unknown:
+            raise ValueError(f"--compare-optimizers contains unknown: {unknown}; "
+                             f"choose from {sorted(OPTIMIZERS)}")
+        return sorted(names)
+    return sorted(OPTIMIZERS)
+
+
 def _run_compare_best_lr(args, run_paired, logger) -> None:
     """Per-optimizer lr sweep (silent), then re-run each at its winning lr.
 
@@ -155,7 +167,7 @@ def _run_compare_best_lr(args, run_paired, logger) -> None:
     from src.utils import score_losses
     lrs = np.logspace(np.log10(args.lr_min), np.log10(args.lr_max), args.lr_n)
     rtol = args.compare_rtol
-    for name in sorted(OPTIMIZERS):
+    for name in _selected_optimizers(args):
         print(f"── sweeping {name} ──")
         best_losses: list[float] | None = None
         best_lr: float | None = None
@@ -248,6 +260,12 @@ def _build_parser() -> argparse.ArgumentParser:
     opt.add_argument("--gate-threshold", type=float, default=None,
                      help="SAV-gating threshold τ on rolling relative loss drop. "
                           "0 disables gating (paper default, always-on SAV).")
+    opt.add_argument("--specmuon-target", choices=("all", "mlp", "attention"),
+                     default="all",
+                     help="Layer-selectivity ablation: which 2-D matrix weights receive "
+                          "the SAV branch. 'all' (default) = paper. 'mlp' = SAV on MLP weights "
+                          "only, attention through paper-tail (SpecMuon top_k=0). 'attention' "
+                          "= the symmetric variant.")
 
     log_group = parser.add_argument_group("logging")
     log_group.add_argument("--backend", choices=("matplotlib", "wandb"), default=None,
@@ -292,6 +310,9 @@ def _build_parser() -> argparse.ArgumentParser:
     modes.add_argument("--lr-n", type=int, default=8)
     modes.add_argument("--compare-rtol", type=float, default=0.01,
                        help="Relative tolerance for --compare-best-lr tiebreak (prefers earlier-min).")
+    modes.add_argument("--compare-optimizers", type=str, default=None,
+                       help="Comma-separated subset of optimizers to include in "
+                            "--compare-all / --compare-best-lr (default: all).")
     return parser
 
 
@@ -419,6 +440,7 @@ def main() -> None:
             svd_every=args.svd_every,
             checkpoint_dir=args.checkpoint_dir,
             checkpoint_every=args.checkpoint_every,
+            specmuon_target=args.specmuon_target,
         )
         return train(cfg, log_sink=logger, run_name=run_name)
 
@@ -458,7 +480,7 @@ def main() -> None:
                 run_name = ", ".join(f"{name}={format_sweep_value(name, value)}" for name, value in overrides.items())
                 run_paired(args.optimizer, logger=logger, run_name=run_name, overrides=overrides)
         elif mode == "compare_all":
-            for name in sorted(OPTIMIZERS):
+            for name in _selected_optimizers(args):
                 run_paired(name, logger=logger, run_name=name)
         elif mode == "compare_best_lr":
             _run_compare_best_lr(args, run_paired, logger)
