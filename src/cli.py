@@ -43,6 +43,7 @@ SWEEP_SPECS = {
     "energy_threshold": {"type": float, "optimizers": _optimizers_accepting("energy_threshold")},
     "gate_window": {"type": int, "optimizers": _optimizers_accepting("gate_window")},
     "gate_threshold": {"type": float, "optimizers": _optimizers_accepting("gate_threshold")},
+    "condition_number": {"type": float},
 }
 
 
@@ -432,10 +433,16 @@ def main() -> None:
         run_name: str | None = None,
         overrides: dict[str, object] | None = None,
     ) -> list[float]:
-        override_keys = set((overrides or {}).keys())
+        overrides = overrides or {}
+        override_keys = set(overrides.keys())
         assert_optimizer_supports_params(optimizer_name, override_keys)
         reset_seeds()
-        lr, weight_decay, opt_kwargs = build_run_settings(overrides or {})
+        lr, weight_decay, opt_kwargs = build_run_settings(overrides)
+        # Route experiment-level overrides (e.g. --sweep condition_number=...)
+        # through experiment_kwargs; without this, sweep values are silently
+        # dropped because build_run_settings only knows about optimizer kwargs.
+        exp_overrides = {k: v for k, v in overrides.items() if k in EXPERIMENT_FIELDS}
+        merged_exp_kwargs = {**experiment_kwargs, **exp_overrides}
         if logger is not None:
             wandb_name = build_wandb_run_name(
                 args.experiment, optimizer_name, lr, weight_decay, opt_kwargs,
@@ -459,7 +466,7 @@ def main() -> None:
             weight_decay=weight_decay,
             batch_size=args.batch_size,
             log_every=args.log_every,
-            experiment_kwargs=experiment_kwargs,
+            experiment_kwargs=merged_exp_kwargs,
             opt_kwargs=opt_kwargs,
             log_grad_svd=args.log_grad_svd,
             log_grad_norms=args.log_grad_norms,

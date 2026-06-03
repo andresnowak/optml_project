@@ -104,6 +104,9 @@ GATE_THRESHOLD="${GATE_THRESHOLD:-}"          # 0 disables (paper default)
 GATE_WINDOW="${GATE_WINDOW:-}"
 KAPPA="${KAPPA:-}"
 
+# Experiment-specific (ill_conditioned_linear_regression).
+CONDITION_NUMBER="${CONDITION_NUMBER:-}"      # default in the experiment is 1e4
+
 # Logging
 BACKEND="${BACKEND:-wandb}"                   # null | matplotlib | wandb
 WANDB_PROJECT="${WANDB_PROJECT:-mlo-specmuon}"
@@ -156,6 +159,7 @@ _build_main_args() {
     _append_if_set "--checkpoint-every" "${CHECKPOINT_EVERY}"
     _append_if_set "--specmuon-target" "${SPECMUON_TARGET}"
     _append_if_set "--compare-optimizers" "${COMPARE_OPTIMIZERS}"
+    _append_if_set "--condition-number" "${CONDITION_NUMBER}"
     # Forward RUN_TAG into the WandB run name too (it already appears in
     # the RunAI job name via TAG_SUFFIX). Without this, back-to-back jobs
     # with identical configs overlap in the WandB dashboard.
