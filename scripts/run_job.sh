@@ -156,6 +156,10 @@ _build_main_args() {
     _append_if_set "--checkpoint-every" "${CHECKPOINT_EVERY}"
     _append_if_set "--specmuon-target" "${SPECMUON_TARGET}"
     _append_if_set "--compare-optimizers" "${COMPARE_OPTIMIZERS}"
+    # Forward RUN_TAG into the WandB run name too (it already appears in
+    # the RunAI job name via TAG_SUFFIX). Without this, back-to-back jobs
+    # with identical configs overlap in the WandB dashboard.
+    _append_if_set "--run-tag" "${RUN_TAG}"
     if [ "${LOG_SAV_R}" = "1" ]; then MAIN_ARGS+=(--log-sav-r); fi
 }
 

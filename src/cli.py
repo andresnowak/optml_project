@@ -117,7 +117,20 @@ def parse_sweep_arg(raw: str) -> tuple[str, list[object]]:
     return name, parsed
 
 
-def build_wandb_run_name(experiment: str, optimizer: str, lr: float, weight_decay: float, opt_kwargs: dict) -> str:
+def build_wandb_run_name(
+    experiment: str,
+    optimizer: str,
+    lr: float,
+    weight_decay: float,
+    opt_kwargs: dict,
+    *,
+    specmuon_target: str = "all",
+    run_tag: str | None = None,
+) -> str:
+    """Compose the WandB run name. Only non-default knobs land in the name
+    so the common case stays readable; ablation flags are appended so jobs
+    that vary only by routing don't collide (the selective-SAV failure mode).
+    """
     parts = [experiment, optimizer, f"lr={lr:.2e}"]
     if weight_decay:
         parts.append(f"wd={weight_decay:.2e}")
@@ -128,6 +141,10 @@ def build_wandb_run_name(experiment: str, optimizer: str, lr: float, weight_deca
             parts.append(f"{k}={v:.3g}")
         else:
             parts.append(f"{k}={v}")
+    if specmuon_target and specmuon_target != "all":
+        parts.append(f"target={specmuon_target}")
+    if run_tag:
+        parts.append(run_tag)
     return "_".join(parts)
 
 
@@ -280,6 +297,10 @@ def _build_parser() -> argparse.ArgumentParser:
     log_group.add_argument("--checkpoint-every", type=int, default=None,
                            help="Save intermediate checkpoint every N steps "
                                 "(in addition to the final one). Requires --checkpoint-dir.")
+    log_group.add_argument("--run-tag", type=str, default=None,
+                           help="Free-form suffix appended to the WandB run name. "
+                                "Use it to keep back-to-back runs with identical configs "
+                                "(e.g. multi-seed reruns) distinguishable in the dashboard.")
     log_group.add_argument("--log-grad-norms", action="store_true",
                            help="Log per-parameter gradient norms and total gradient norm.")
     log_group.add_argument("--log-weight-norms", action="store_true",
@@ -416,10 +437,17 @@ def main() -> None:
         reset_seeds()
         lr, weight_decay, opt_kwargs = build_run_settings(overrides or {})
         if logger is not None:
-            wandb_name = build_wandb_run_name(args.experiment, optimizer_name, lr, weight_decay, opt_kwargs)
+            wandb_name = build_wandb_run_name(
+                args.experiment, optimizer_name, lr, weight_decay, opt_kwargs,
+                specmuon_target=args.specmuon_target,
+                run_tag=args.run_tag,
+            )
             run_config = {"experiment": args.experiment, "optimizer": optimizer_name,
                           "lr": lr, "weight_decay": weight_decay, "steps": args.steps,
-                          "batch_size": args.batch_size, **opt_kwargs}
+                          "batch_size": args.batch_size,
+                          "specmuon_target": args.specmuon_target,
+                          "run_tag": args.run_tag,
+                          **opt_kwargs}
             metric_prefix = f"{run_name}/" if run_name else ""
             logger.start_run(wandb_name, run_config, metric_prefix=metric_prefix)
         cfg = TrainConfig(
