@@ -25,6 +25,12 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
 
+# cd into the project so any relative paths the user passes via CLI args
+# (e.g. `--config configs/shakespeare.yaml`) resolve from the project root.
+# The default container cwd is /workspace which is non-writable and doesn't
+# contain the repo.
+cd "${PROJECT_DIR}"
+
 # Install the few deps the pytorch image doesn't have. `--user` keeps them
 # in $HOME/.local (on the PVC), so subsequent jobs on the same image find
 # them already installed and the next call is a no-op.
