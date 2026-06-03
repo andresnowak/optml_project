@@ -82,7 +82,8 @@ JOB_STAMP="${JOB_STAMP:-$(date +%Y%m%d-%H%M%S)}"
 # (even to empty), so we lock the answer BEFORE the defaults block below.
 for _v in CONFIG EXPERIMENT OPTIMIZER STEPS LR SEED LOG_EVERY \
           TOP_K SIGMA_MODE GATE_THRESHOLD GATE_WINDOW KAPPA \
-          BACKEND LOG_SAV_R CHECKPOINT_DIR CHECKPOINT_EVERY; do
+          BACKEND LOG_SAV_R CHECKPOINT_DIR CHECKPOINT_EVERY \
+          SPECMUON_TARGET COMPARE_OPTIMIZERS LR_MIN LR_MAX LR_N; do
     eval "_USER_${_v}=\"\${${_v}+set}\""
 done
 
@@ -113,6 +114,12 @@ LOG_SAV_R="${LOG_SAV_R:-0}"                   # 1 ⇒ --log-sav-r
 # set CHECKPOINT_DIR to opt in, or use one of the subcommands that pins it.
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-}"           # e.g. ${HOME}/optml_checkpoints
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-}"       # intermediate save cadence; empty ⇒ end-only
+
+# Selective-SAV ablation: which 2-D weights receive the SAV branch.
+SPECMUON_TARGET="${SPECMUON_TARGET:-}"         # all | mlp | attention; empty ⇒ CLI default ('all')
+
+# Comma-separated optimizer subset for --compare-all / --compare-best-lr.
+COMPARE_OPTIMIZERS="${COMPARE_OPTIMIZERS:-}"   # e.g. adamw,muon,specmuon
 
 # Optional run tag — appears in the WandB run name AND the RunAI job name
 # so back-to-back jobs with otherwise identical configs don't visually merge.
@@ -147,6 +154,8 @@ _build_main_args() {
     _append_if_set "--kappa" "${KAPPA}"
     _append_if_set "--checkpoint-dir" "${CHECKPOINT_DIR}"
     _append_if_set "--checkpoint-every" "${CHECKPOINT_EVERY}"
+    _append_if_set "--specmuon-target" "${SPECMUON_TARGET}"
+    _append_if_set "--compare-optimizers" "${COMPARE_OPTIMIZERS}"
     if [ "${LOG_SAV_R}" = "1" ]; then MAIN_ARGS+=(--log-sav-r); fi
 }
 
@@ -228,6 +237,34 @@ case "${1:-}" in
         _submit "${job_name}" "${GATE_SENS_PY}" "${GATE_ARGS[@]}"
         ;;
 
+    selective-sav)
+        # Layer-selectivity ablation: TWO parallel jobs that vary which 2-D
+        # weights receive the SAV branch (the rest get SpecMuon top_k=0,
+        # i.e. paper-tail) — isolates SAV's per-layer-type contribution while
+        # holding everything else constant. Pair the resulting WandB curves
+        # with the existing shakespeare-long run (specmuon_target=all).
+        [ -z "${_USER_CONFIG}"           ] && CONFIG="${PROJECT_DIR}/configs/shakespeare.yaml"
+        EXPERIMENT=shakespeare
+        OPTIMIZER=specmuon
+        [ -z "${_USER_TOP_K}"            ] && TOP_K=32
+        [ -z "${_USER_LR}"               ] && LR=3e-4
+        [ -z "${_USER_STEPS}"            ] && STEPS=10000
+        [ -z "${_USER_LOG_EVERY}"        ] && LOG_EVERY=100
+        LOG_SAV_R=1
+        BACKEND=wandb
+        [ -z "${_USER_CHECKPOINT_EVERY}" ] && CHECKPOINT_EVERY=2000
+        # Fire MLP-only first, then attention-only — share JOB_STAMP so they
+        # sort together in `runai list`. The original SPECMUON_TARGET env
+        # var (if any) is ignored; both targets are fixed by this subcommand.
+        for tgt in mlp attention; do
+            SPECMUON_TARGET="${tgt}"
+            CHECKPOINT_DIR="${HOME}/optml_checkpoints/selective_sav_${tgt}"
+            _build_main_args
+            job_name="selsav-${tgt}${TAG_SUFFIX}-${JOB_STAMP}"
+            _submit "${job_name}" "${MAIN_PY}" "${MAIN_ARGS[@]}"
+        done
+        ;;
+
     shakespeare-long)
         # Priority 1(a) of the experimental program: does top_k=32 keep
         # descending past 2000 steps? Push 5× further with --log-sav-r so
@@ -272,7 +309,7 @@ case "${1:-}" in
 Usage: $0 <subcommand>
 
   single | sanity | sweep | compare-best-lr
-  sav-isolation | gate-sensitivity | shakespeare-long
+  sav-isolation | gate-sensitivity | shakespeare-long | selective-sav
   interactive | logs <job> | delete <job> | list
 
 See header comment for env vars and examples.
