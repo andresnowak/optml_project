@@ -1,0 +1,9 @@
+# Experiment 2 — anisotropic noise injection. The script runs this config twice
+# (global_schedule vs stable_rank) with the noise hook active and compares loss /
+# p-trajectory stability.
+extends: small.yaml
+
+max_steps: 300
+eval_every: 300
+log_every: 5
+noise_lambda: 3.0

@@ -1,40 +1,14 @@
-#!/bin/bash
-# ============================================================
-# Cluster container entry. Run by run_job.sh — not invoked locally.
-#
-# The pytorch base image ships torch + numpy; this script adds the three
-# small pure-Python deps (`wandb`, `pyyaml`, `matplotlib`) we actually need,
-# sets PYTHONPATH so `from src.cli import main` resolves regardless of cwd,
-# then execs `python "$@"` with the rest of the argv. metalcore is NOT
-# installed: it's only needed on MPS, and src/{optimizers,experiments}.py
-# already import it inside a try/except so the cuda code path is clean.
-#
-# Invocation pattern (from run_job.sh):
-#   runai submit ... --command -- bash /path/to/container_entry.sh \
-#       /path/to/main.py --experiment shakespeare ...
-#
-# argv after k8s flattens it stays clean (no quoting, no metacharacters):
-#   [bash, .../container_entry.sh, .../main.py, --experiment, shakespeare, ...]
-# ============================================================
-set -e
+#!/usr/bin/env bash
+# Container entrypoint for cluster runs. Installs deps into the base PyTorch
+# image, sets PYTHONPATH, cd's to the project dir, then execs the given command.
+set -euo pipefail
 
-# PROJECT_DIR = the parent of this script's directory.
-# Resolves correctly whether the script is invoked by absolute or relative path.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_DIR="${PROJECT_DIR:-/workspace/project}"
+cd "$PROJECT_DIR"
 
-export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
+pip install --no-cache-dir numpy pyyaml tiktoken datasets wandb matplotlib >/dev/null
 
-# cd into the project so any relative paths the user passes via CLI args
-# (e.g. `--config configs/shakespeare.yaml`) resolve from the project root.
-# The default container cwd is /workspace which is non-writable and doesn't
-# contain the repo.
-cd "${PROJECT_DIR}"
+export PYTHONPATH="$PROJECT_DIR:${PYTHONPATH:-}"
 
-# Install the few deps the pytorch image doesn't have. `--user` keeps them
-# in $HOME/.local (on the PVC), so subsequent jobs on the same image find
-# them already installed and the next call is a no-op.
-python -m pip install --quiet --no-cache-dir --user --disable-pip-version-check \
-    wandb pyyaml matplotlib
-
-exec python "$@"
+echo "[container_entry] running: $*"
+exec "$@"

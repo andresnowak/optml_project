@@ -1,0 +1,45 @@
+# Shared defaults. Model-specific configs `extends: base.yaml` and override.
+# Every run knob lives here — nothing is hard-coded in the Python.
+
+device: auto
+seed: 0
+mlp: gelu                  # gelu | gated
+data_dir: data/wikitext103
+
+# routing
+routing_mode: stable_rank  # stable_rank | snr | alignment | global_schedule
+compute_mode: ns           # ns (fast Newton-Schulz/eigen) | svd (exact)
+ns_variant: quintic        # quintic (reference DynMuon) | cubic (textbook)
+ns_steps: 5                # cubic iterations (quintic is fixed at 5)
+# global_schedule logistic (reference DynMuon get_p): p drops 1 -> -0.25
+tau_ratio: 0.04            # schedule center (fraction of total steps)
+width_ratio: 0.04          # schedule width
+
+# optimization
+momentum: 0.95
+nesterov: true
+adjust_lr_fn: spectral_norm   # sqrt(fan_out/fan_in); null disables
+muon_lr: 0.02              # DynMuon-Route matrices
+adam_lr: 6.0e-4           # embeddings / norms / biases
+weight_decay: 0.1
+
+# schedule
+min_lr_ratio: 0.1
+grad_clip: 1.0
+
+# logging / eval
+log_every: 10
+eval_iters: 50
+wandb: false
+wandb_project: dynmuon-route
+
+# experiment 2 — anisotropic noise injection (0 disables)
+noise_lambda: 0.0
+
+# Per-layer-type routing logistic:
+#   p = p_min + (p_max-p_min) / (1 + exp(-(x - mu)/omega))
+# Stable-rank proxy x is in [1, d]; omega > 0 => p increases with x.
+# Defaults below are model-agnostic fallbacks; each model config overrides
+# `route` with values scaled to its d = min(rows, cols).
+route:
+  default: {mu: 0.5, omega: 0.25}

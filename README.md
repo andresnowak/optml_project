@@ -1,174 +1,94 @@
-# Optimization Benchmark Project
+# DynMuon-Route
 
-Benchmarks optimizer convergence across controlled problems using PyTorch.
-Compares `adam`, `adamw`, `sgd`, `muon`, and **`specmuon`** — Muon with the
-Scalar Auxiliary Variable (SAV) mechanism from
-*Muon with Spectral Guidance* (Lu, Zhang & Lin, arXiv:2602.16167).
+Dynamic **layer-wise spectral-exponent routing** for the Muon optimizer, built on
+top of the [DynMuon](https://github.com/fzwark/DynMuon) baseline.
 
-Managed with `uv`. Run `main.py` from the project root — no package install needed.
+Muon-family methods shape the momentum-averaged gradient `M = U Σ Vᵀ` with a
+spectral operator `D(p) = U Σ^p Vᵀ`:
 
-## Setup
+- `p = 1.0` → SGD (raw singular values)
+- `p = 0.0` → Muon (polar factor, all singular values → 1)
+- `p = -0.25` → late-stage outlier suppression (strength reallocated to flat directions)
+
+**DynMuon** drives a single global logistic *time* schedule `p_t : 1 → -0.25` for
+every layer (reference `get_p`: `p = p_min + (p_max-p_min)/(1+exp((q_t-τ)/w))`,
+with `q_t = step/total_steps`, `τ = w = 0.04`). **DynMuon-Route** (this repo)
+replaces it with a *local* per-parameter proxy mapped through a per-layer-type
+logistic to a parameter-specific exponent `p_{t,l}`.
+
+## Routing proxies
+
+| Metric | Definition | Routing logic |
+|--------|------------|---------------|
+| Stable rank `sr` (default) | `‖M‖_F² / σ_max²` | low sr (anisotropic) → p → -0.25; high sr → p ≥ 0 |
+| SNR proxy `γ` | `‖M‖_F / ‖G - M‖_F` | low γ (noisy) → p ≥ 0; high γ → negative allowed |
+| Alignment `α` | `|tr(Wᵀ M)| / (‖W‖_F‖M‖_F)` | high α → p → 1; low α → p → 0 |
+
+Mapping: `p = p_min + (p_max - p_min) / (1 + exp(-(x - μ)/ω))`, per-layer-type
+`μ, ω` (sign of `ω` sets orientation). `p_min = -0.25`, `p_max = 1.0`.
+
+## Compute backends
+
+- `compute_mode="svd"` — exact `U Σ^p Vᵀ` via SVD (validation / debugging).
+- `compute_mode="ns"` — fast path using `U Σ^p Vᵀ = A^{p/2} Y_μ`, where `Y_μ` is the
+  Newton-Schulz polar factor (`ns_variant`: `quintic`, the reference DynMuon tuned
+  5-step iteration, or `cubic`, the textbook `1.5X - 0.5XXᵀX`) and `A = X_n X_nᵀ` is
+  the small Gram matrix whose symmetric eigendecomposition gives `A^{p/2}` (and
+  `λ_max` for the stable rank).
+
+LR scaling follows DynMuon's spectral-norm rule `sqrt(fan_out/fan_in)`.
+
+## Layout
+
+```
+dynmuon/                 # library package
+  optimizer.py           # DynMuonRoute, schedule, Newton-Schulz, routing math
+  models.py              # 124M GPT (nanoGPT naming) + gated-MLP block
+  data.py                # WikiText-103 memmap batch loading
+  trainer.py             # train loop, optimizer wiring, routing logging, noise hook
+  config.py              # YAML loading (extends) + device selection
+configs/
+  base.yaml              # all defaults (every knob lives here)
+  gpt124m.yaml           # 124M reference (extends base)
+  small.yaml             # fast local / smoke config (extends base)
+  exp1_spectral.yaml     # experiment 1 (extends small)
+  exp2_noise.yaml        # experiment 2 (extends small)
+train.py                 # thin CLI entry point
+validate_math.py         # pytest: factorization == exact SVD, NS polar factor, ns≈svd
+experiments/
+  exp1_spectral_evolution.py   # per-layer p_{t,l} trajectories
+  exp2_noise_injection.py      # anisotropic-noise robustness
+scripts/
+  prepare_wikitext.py    # WikiText-103 -> GPT-2-BPE train.bin/val.bin
+  run_job.sh             # RunAI cluster submission (+ container_entry.sh)
+```
+
+All customization is done through `configs/*.yaml`; a config `extends:` another and
+overrides selected keys. CLI flags (e.g. `--routing-mode`, `--max-steps`) override
+the YAML for ad-hoc runs.
+
+## Quickstart
 
 ```bash
 uv sync
+pytest validate_math.py                          # spectral-math unit tests
+python scripts/prepare_wikitext.py               # tokenize WikiText-103
+python train.py --config configs/small.yaml --max-steps 50    # smoke test
+python experiments/exp1_spectral_evolution.py    # spectral-evolution plot (small model)
 ```
 
-Optional `.env`:
+Cluster (124M):
 
 ```bash
-WANDB_PROJECT=mlo-specmuon
-WANDB_ENTITY=cs-439-project
+scripts/run_job.sh sanity
+scripts/run_job.sh exp1 --model gpt124m --max-steps 4000
 ```
-
-## Running
-
-```bash
-uv run python main.py [options]
-```
-
-YAML configs in `configs/` cover the canonical setups:
-
-```bash
-uv run python main.py --config configs/matrix_factorization.yaml
-```
-
-`extends:` is supported; CLI flags override anything in the config.
 
 ## Experiments
 
-| name | description |
-|---|---|
-| `linear_regression` | Synthetic linear dataset, MSE loss |
-| `matrix_factorization` | Recover a low-rank matrix via two factor matrices |
-| `shakespeare` | Char-level mini-GPT on tinyshakespeare |
-
-`src/experiments/` holds one file per problem. Each experiment subclasses
-`BaseExperiment` (`src/experiments/base.py`) and may implement an optional
-`metric(model)` hook for held-out evaluation logging.
-
-## Modes
-
-### Single run
-
-```bash
-uv run python main.py --experiment linear_regression --optimizer muon --steps 300
-```
-
-### Compare all optimizers at a fixed lr
-
-```bash
-uv run python main.py --experiment matrix_factorization --compare-all --lr 1e-2 --log-scale
-```
-
-### Per-optimizer best-lr comparison
-
-Runs `--lr-n` log-spaced learning rates for each optimizer (silent), then
-re-runs each at its winning lr through the configured logger:
-
-```bash
-uv run python main.py --experiment matrix_factorization --compare-best-lr --lr-min 1e-4 --lr-max 1
-```
-
-### Sweep one or more hyperparameters
-
-```bash
-uv run python main.py --optimizer adam --sweep-lr --lr-min 1e-4 --lr-max 1.0 --lr-n 10 --log-scale
-uv run python main.py --optimizer specmuon --sweep top_k=2,4,8 --log-scale
-```
-
-Repeat `--sweep` for a Cartesian-product grid sweep:
-
-```bash
-uv run python main.py --optimizer specmuon \
-  --sweep sigma_mode=baseline,clip \
-  --sweep gate_threshold=0,0.05,0.1 \
-  --backend wandb
-```
-
-## Optimizer hyperparameters
-
-| flag | applies to |
-|---|---|
-| `--lr` | all |
-| `--weight-decay` | all except muon, specmuon |
-| `--momentum` | sgd, muon, specmuon |
-| `--beta1`, `--beta2` | adam, adamw |
-| `--eps` | adam, adamw, specmuon |
-| `--ns-steps` | muon (Newton-Schulz iterations) |
-| `--adjust-lr-fn shape_scaling` | muon, specmuon (Keller/Jordan `sqrt(max(1, m/n))`) |
-| `--top-k` | specmuon (SAV singular directions, default 6 — paper-faithful) |
-| `--sav-smooth` | specmuon (smoothing factor ξ, default 0.2) |
-| `--kappa` | specmuon (loss-shift constant κ ≥ 0, paper §2.1) |
-| `--sigma-mode` | specmuon (`baseline`/`sqrt`/`power`/`clip`/`truncate`/`energy`) |
-| `--power-beta` | specmuon (`power` mode: η/(σ^β+ε); β=1 ≡ baseline, β=0.5 ≡ sqrt) |
-| `--sigma-clip` | specmuon (`clip` mode: η/(σ+sigma_clip)) |
-| `--sigma-truncate` | specmuon (`truncate` mode: drop σ < threshold·σ_max) |
-| `--energy-threshold` | specmuon (`energy` mode: dynamic k by cumulative σ² ≥ τ) |
-| `--gate-window`, `--gate-threshold` | specmuon (SAV-gating; τ=0 disables — paper default) |
-
-`--sweep PARAM=v1,v2,...` accepts all of the above keyword names (e.g.
-`--sweep sigma_mode=baseline,clip`).
-
-## Logging options
-
-| flag | effect |
-|---|---|
-| `--backend matplotlib` | show plot after run |
-| `--backend wandb` | log to Weights & Biases |
-| `--log-scale` | log y-axis (matplotlib) |
-| `--smooth N` | rolling-mean window of N steps |
-| `--save-plot PATH` | save figure to file |
-| `--log-grad-svd` | log singular values of parameter gradients |
-| `--log-sav-r` | log SpecMuon's SAV `r` tracker and `last_iota` diagnostic |
-| `--log-grad-norms` | log per-parameter gradient norms + total |
-| `--log-weight-norms` | log per-parameter weight norms |
-| `--svd-every N` | SVD logging frequency (default: same as `--log-every`) |
-| `--svd-top-k K` | only show top-k singular values |
-
-`--wandb-project` and `--wandb-entity` default to `WANDB_PROJECT` / `WANDB_ENTITY` from `.env`, then fall back to `mlo-specmuon` / `cs-439-project`.
-
-## Mechanism-isolation scripts
-
-Two scripts probe SpecMuon's SAV mechanism on the three benchmark problems
-without depending on extra experiments. Both write to
-`results/<name>/<experiment>/`.
-
-```bash
-# SAV isolation: top_k ∈ {0, 1, 6, 32} + gated variant on a fixed (experiment, lr).
-# top_k=0 is the no-SAV ablation (paper-tail update on every direction).
-uv run python scripts/sav_isolation.py --experiment matrix_factorization --lr 1e-1
-
-# Gate sensitivity: τ ∈ {0, .01, .05, .1, .2} × window ∈ {5, 10, 20}.
-# τ=0 reproduces the paper-default (always-on SAV) — useful baseline cell.
-uv run python scripts/gate_sensitivity.py --experiment shakespeare --steps 600
-```
-
-## Device
-
-`--device auto` (default) picks `cuda` → `mps` → `cpu`. Pass `cpu`, `cuda`,
-or `mps` to override.
-
-## Optimizers
-
-- **Muon** — subclassed from `torch.optim.Muon`. Torch's internal
-  `adjust_lr_fn` is disabled in the subclass so the only LR shape-scaling
-  active is the one we explicitly select via `--adjust-lr-fn`.
-- **SpecMuon** — Muon with SAV (Scalar Auxiliary Variable) adaptive scaling
-  for the top-k singular directions. The remaining directions receive the
-  paper-tail update `U_{k:} diag(S_{k:}) V_{k:}^T`. Defaults match the paper
-  grid-search winners (`μ=0.9`, `top_k=6`, `sav_smooth=0.2`).
-  [Paper](https://www.arxiv.org/abs/2602.16167).
-  - **σ-mode knobs** (`power/clip/truncate/energy`) generalize the per-direction
-    step size beyond the paper's `η/(σ+ε)`.
-  - **SAV-gating** (`gate_threshold`/`gate_window`) bypasses SAV when the loss
-    is dropping fast over a rolling window, collapsing to the tail-only update —
-    the §4.2 regime where Muon-tail outperforms SAV. `gate_threshold=0`
-    reproduces the paper default (always-on SAV) byte-identically.
-  - **`last_iota` diagnostic** measures per-step SAV-intervention magnitude;
-    log it with `--log-sav-r`.
-
-## Tests
-
-```bash
-uv run pytest tests/
-```
+- **Exp 1 — spectral evolution:** does Attention reject negative `p` (stays `p ≥ 0`)
+  while MLP routes toward `p = -0.25`? Compares the global schedule vs the
+  Stable-Rank router and plots `p_{t,l}` for `c_attn`, `c_proj`, `mlp.c_fc`, `mlp.c_proj`.
+- **Exp 2 — noise injection:** inject `M += λ·σ₁·z·u₁v₁ᵀ` and check the Stable-Rank
+  router detects the anisotropic spike, drops `p` negative, and stays stable while
+  the global schedule destabilizes.
