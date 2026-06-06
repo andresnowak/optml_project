@@ -20,7 +20,9 @@ OUT_DIR = os.path.join("data", "wikitext103")
 def main() -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
     enc = tiktoken.get_encoding("gpt2")
-    ds = load_dataset("wikitext", "wikitext-103-raw-v1")
+    # Namespaced repo id: recent huggingface_hub rejects the bare "wikitext"
+    # canonical name. Salesforce/wikitext is the current home of the dataset.
+    ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1")
 
     for split, out_name in (("train", "train.bin"), ("validation", "val.bin")):
         text = "\n".join(t for t in ds[split]["text"] if t)

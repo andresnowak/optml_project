@@ -42,6 +42,7 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 # Mount the home PVC so the repo + data + wandb cache persist and are visible
 # inside the pod at the same absolute path as on the submit node.
 BASE_FLAGS="--image ${IMAGE} --pvc home:${HOME} -e HOME=${HOME} --run-as-user --gpu ${GPUS}"
+[ -n "${HF_TOKEN:-}" ]      && BASE_FLAGS="${BASE_FLAGS} -e HF_TOKEN=${HF_TOKEN}"
 [ -n "${WANDB_API_KEY:-}" ] && BASE_FLAGS="${BASE_FLAGS} -e WANDB_API_KEY=${WANDB_API_KEY}"
 [ -n "${WANDB_PROJECT:-}" ] && BASE_FLAGS="${BASE_FLAGS} -e WANDB_PROJECT=${WANDB_PROJECT}"
 [ -n "${WANDB_ENTITY:-}" ]  && BASE_FLAGS="${BASE_FLAGS} -e WANDB_ENTITY=${WANDB_ENTITY}"
