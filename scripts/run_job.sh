@@ -32,43 +32,65 @@
 
 set -euo pipefail
 
+ENV_FILE="${ENV_FILE:-.env}"
+if [ -f "${ENV_FILE}" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${ENV_FILE}"
+    set +a
+fi
+
 USERNAME=$(whoami)
 
 # --- Image -------------------------------------------------------------
-# Generic CUDA-enabled PyTorch image. The container must have `uv` on PATH
-# and the project synced (`uv sync`) before training launches. Easiest path:
-# bake a small derived image that runs `pip install uv && uv sync` once.
-IMAGE="${IMAGE:-pytorch/pytorch:2.9.0-cuda12.6-cudnn9-runtime}"
+# Default to the MLO uv image. Override IMAGE/RUNAI_IMAGE if you want another
+# CUDA image.
+IMAGE="${IMAGE:-${RUNAI_IMAGE:-ic-registry.epfl.ch/mlo/mlo-base:uv1}}"
 
-# --- Project layout (on the home PVC, same path inside the container) -
-# Auto-resolve PROJECT_DIR from THIS script's location (run_job.sh lives in
-# ${PROJECT_DIR}/scripts/), so we don't hard-code a path that may differ
-# from the actual repo location on the cluster PVC. The submitter's CWD is
-# irrelevant; what matters is where the repo lives on disk.
-# Override via the env var if you ever need to point at a different copy.
+# --- Project layout inside the RunAI container -------------------------
+# This script can be submitted from a Mac while the source files live on the
+# server/PVC. In that case set CLUSTER_HOME and PROJECT_DIR to the paths as
+# seen *inside* the RunAI container, e.g.
+#   CLUSTER_HOME=/home/nowak
+#   PROJECT_DIR=/home/nowak/developer/optml_project
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="${PROJECT_DIR:-$(cd "${_SELF_DIR}/.." && pwd)}"
+LOCAL_PROJECT_DIR="$(cd "${_SELF_DIR}/.." && pwd)"
+CLUSTER_HOME="${CLUSTER_HOME:-${HOME}}"
+PROJECT_DIR="${PROJECT_DIR:-${LOCAL_PROJECT_DIR}}"
 MAIN_PY="${PROJECT_DIR}/main.py"
 SAV_ISO_PY="${PROJECT_DIR}/scripts/sav_isolation.py"
 GATE_SENS_PY="${PROJECT_DIR}/scripts/gate_sensitivity.py"
 
-# Entry shim that pip-installs wandb/pyyaml/matplotlib into ~/.local on the
-# PVC, sets PYTHONPATH=${PROJECT_DIR}, then execs `python "$@"`. We use this
-# instead of `uv` because the pytorch base image doesn't ship uv.
+# Entry shim that bootstraps uv into ~/.local when needed, syncs the project
+# environment on the PVC, sets PYTHONPATH=${PROJECT_DIR}, then execs
+# `uv run --no-sync python "$@"`.
 ENTRY_SH="${PROJECT_DIR}/scripts/container_entry.sh"
 
 # --- RunAI base flags --------------------------------------------------
 # WANDB_API_KEY is forwarded from the submitting shell so wandb.init works
 # inside the container without baking secrets into the image.
-BASE_FLAGS="--image ${IMAGE} --pvc home:${HOME} -e HOME=${HOME} --run-as-user --gpu 1"
+
+if [ -n "${LDAP_UID:-}" ] && [ -n "${LDAP_GID:-}" ]; then
+    RUN_AS_FLAGS="--run-as-uid ${LDAP_UID} --run-as-gid ${LDAP_GID}"
+else
+    RUN_AS_FLAGS="--run-as-user"
+fi
+BASE_FLAGS="--image ${IMAGE} --pvc home:${CLUSTER_HOME} -e HOME=${CLUSTER_HOME} ${RUN_AS_FLAGS} --gpu 1"
+if [ -n "${NODE_POOLS:-}" ]; then
+    BASE_FLAGS="${BASE_FLAGS} --node-pools ${NODE_POOLS}"
+fi
+
 if [ -n "${WANDB_API_KEY:-}" ]; then
     BASE_FLAGS="${BASE_FLAGS} -e WANDB_API_KEY=${WANDB_API_KEY}"
 fi
 # Persistent local logs on the PVC (otherwise wandb falls back to /tmp and
 # its run cache is wiped when the pod terminates). The directory is created
 # lazily by wandb on first use.
-WANDB_DIR="${WANDB_DIR:-${HOME}/.wandb}"
+WANDB_DIR="${WANDB_DIR:-${CLUSTER_HOME}/.wandb}"
 BASE_FLAGS="${BASE_FLAGS} -e WANDB_DIR=${WANDB_DIR}"
+UV_CACHE_DIR="${UV_CACHE_DIR:-${CLUSTER_HOME}/.cache/uv}"
+UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-${CLUSTER_HOME}/.uv}"
+BASE_FLAGS="${BASE_FLAGS} -e UV_CACHE_DIR=${UV_CACHE_DIR} -e UV_PYTHON_INSTALL_DIR=${UV_PYTHON_INSTALL_DIR}"
 
 # --- Per-invocation timestamp for unique RunAI job names ----------------
 # RunAI rejects a `runai submit --name X` if a job with that name still
@@ -82,8 +104,10 @@ JOB_STAMP="${JOB_STAMP:-$(date +%Y%m%d-%H%M%S)}"
 # (even to empty), so we lock the answer BEFORE the defaults block below.
 for _v in CONFIG EXPERIMENT OPTIMIZER STEPS LR SEED LOG_EVERY \
           TOP_K SIGMA_MODE GATE_THRESHOLD GATE_WINDOW KAPPA \
-          BACKEND LOG_SAV_R CHECKPOINT_DIR CHECKPOINT_EVERY \
-          SPECMUON_TARGET COMPARE_OPTIMIZERS LR_MIN LR_MAX LR_N; do
+          TAIL_MODE \
+          BACKEND LOG_SAV_R WANDB_PROJECT CHECKPOINT_DIR CHECKPOINT_EVERY \
+          SPECMUON_TARGET COMPARE_OPTIMIZERS CONDITION_NUMBER \
+          RUN_TAG LR_MIN LR_MAX LR_N; do
     eval "_USER_${_v}=\"\${${_v}+set}\""
 done
 
@@ -100,13 +124,17 @@ LOG_EVERY="${LOG_EVERY:-50}"
 # SpecMuon v2 knobs
 TOP_K="${TOP_K:-}"                            # leave empty to use paper default (6)
 SIGMA_MODE="${SIGMA_MODE:-}"                  # baseline | sqrt | power | clip | truncate | energy
+TAIL_MODE="${TAIL_MODE:-}"                    # gradient | muon
 GATE_THRESHOLD="${GATE_THRESHOLD:-}"          # 0 disables (paper default)
 GATE_WINDOW="${GATE_WINDOW:-}"
 KAPPA="${KAPPA:-}"
 
+# Experiment-specific knobs.
+CONDITION_NUMBER="${CONDITION_NUMBER:-}"      # ill_conditioned_linear_regression default is in the experiment.
+
 # Logging
 BACKEND="${BACKEND:-wandb}"                   # null | matplotlib | wandb
-WANDB_PROJECT="${WANDB_PROJECT:-mlo-specmuon}"
+WANDB_PROJECT="${WANDB_PROJECT:-mlo-specmuon-${EXPERIMENT//_/-}}"
 WANDB_ENTITY="${WANDB_ENTITY:-cs-439-project}"
 LOG_SAV_R="${LOG_SAV_R:-0}"                   # 1 ⇒ --log-sav-r
 
@@ -124,7 +152,10 @@ COMPARE_OPTIMIZERS="${COMPARE_OPTIMIZERS:-}"   # e.g. adamw,muon,specmuon
 # Optional run tag — appears in the WandB run name AND the RunAI job name
 # so back-to-back jobs with otherwise identical configs don't visually merge.
 RUN_TAG="${RUN_TAG:-}"
-if [ -n "${RUN_TAG}" ]; then TAG_SUFFIX="-${RUN_TAG}"; else TAG_SUFFIX=""; fi
+SAFE_EXPERIMENT="${EXPERIMENT//_/-}"
+SAFE_OPTIMIZER="${OPTIMIZER//_/-}"
+SAFE_RUN_TAG="${RUN_TAG//_/-}"
+if [ -n "${SAFE_RUN_TAG}" ]; then TAG_SUFFIX="-${SAFE_RUN_TAG}"; else TAG_SUFFIX=""; fi
 
 # --- Helpers -----------------------------------------------------------
 # Append `--flag value` to MAIN_ARGS (a bash array) iff value is non-empty.
@@ -149,6 +180,7 @@ _build_main_args() {
                 --wandb-project "${WANDB_PROJECT}" --wandb-entity "${WANDB_ENTITY}")
     _append_if_set "--top-k" "${TOP_K}"
     _append_if_set "--sigma-mode" "${SIGMA_MODE}"
+    _append_if_set "--tail-mode" "${TAIL_MODE}"
     _append_if_set "--gate-threshold" "${GATE_THRESHOLD}"
     _append_if_set "--gate-window" "${GATE_WINDOW}"
     _append_if_set "--kappa" "${KAPPA}"
@@ -156,6 +188,8 @@ _build_main_args() {
     _append_if_set "--checkpoint-every" "${CHECKPOINT_EVERY}"
     _append_if_set "--specmuon-target" "${SPECMUON_TARGET}"
     _append_if_set "--compare-optimizers" "${COMPARE_OPTIMIZERS}"
+    _append_if_set "--condition-number" "${CONDITION_NUMBER}"
+    _append_if_set "--run-tag" "${RUN_TAG}"
     if [ "${LOG_SAV_R}" = "1" ]; then MAIN_ARGS+=(--log-sav-r); fi
 }
 
@@ -163,8 +197,8 @@ _build_main_args() {
 # Kubernetes then re-tokenizes by whitespace — so `bash -lc "cd X && cmd"`
 # does NOT survive (quotes vanish, `&&` becomes a literal positional arg).
 # Workaround: hand RunAI a shell-free, absolute-path argv list:
-#   [bash, /abs/path/container_entry.sh, /abs/path/main.py, --flag, value, …]
-# The entry script sets PYTHONPATH + installs missing deps, then execs python.
+#   [bash, /abs/path/container_entry.sh, /abs/path/main.py, --flag, value, ...]
+# The entry script sets PYTHONPATH + syncs deps, then execs uv-run Python.
 _submit() {
     local job_name="$1"
     shift
@@ -181,7 +215,7 @@ case "${1:-}" in
 
     single)
         _build_main_args
-        job_name="single-${EXPERIMENT}-${OPTIMIZER}${TAG_SUFFIX}-${JOB_STAMP}"
+        job_name="single-${SAFE_EXPERIMENT}-${SAFE_OPTIMIZER}${TAG_SUFFIX}-${JOB_STAMP}"
         _submit "${job_name}" "${MAIN_PY}" "${MAIN_ARGS[@]}"
         ;;
 
@@ -192,7 +226,7 @@ case "${1:-}" in
         LOG_EVERY=25
         BACKEND="${BACKEND:-null}"   # silent by default; pass BACKEND=wandb to confirm logging
         _build_main_args
-        job_name="sanity-${EXPERIMENT}-${OPTIMIZER}${TAG_SUFFIX}-${JOB_STAMP}"
+        job_name="sanity-${SAFE_EXPERIMENT}-${SAFE_OPTIMIZER}${TAG_SUFFIX}-${JOB_STAMP}"
         _submit "${job_name}" "${MAIN_PY}" "${MAIN_ARGS[@]}"
         ;;
 
@@ -206,7 +240,7 @@ case "${1:-}" in
         done
         # Sweep can be slow; let WandB see the descriptive run names.
         BACKEND=wandb
-        job_name="sweep-${EXPERIMENT}-${OPTIMIZER}${TAG_SUFFIX}-${JOB_STAMP}"
+        job_name="sweep-${SAFE_EXPERIMENT}-${SAFE_OPTIMIZER}${TAG_SUFFIX}-${JOB_STAMP}"
         _submit "${job_name}" "${MAIN_PY}" "${MAIN_ARGS[@]}"
         ;;
 
@@ -217,7 +251,7 @@ case "${1:-}" in
         LR_N="${LR_N:-8}"
         _build_main_args
         MAIN_ARGS+=(--compare-best-lr --lr-min "${LR_MIN}" --lr-max "${LR_MAX}" --lr-n "${LR_N}")
-        job_name="cbestlr-${EXPERIMENT}${TAG_SUFFIX}-${JOB_STAMP}"
+        job_name="cbestlr-${SAFE_EXPERIMENT}${TAG_SUFFIX}-${JOB_STAMP}"
         _submit "${job_name}" "${MAIN_PY}" "${MAIN_ARGS[@]}"
         ;;
 
@@ -225,7 +259,7 @@ case "${1:-}" in
         # scripts/sav_isolation.py — top_k ∈ {0, 1, 6, 32} + gated variant.
         # Writes results/sav_isolation/<experiment>/{trajectories.png, summary.md, results.json}.
         OUT_DIR="${OUT_DIR:-${PROJECT_DIR}/results/sav_isolation/${EXPERIMENT}}"
-        job_name="savisol-${EXPERIMENT}${TAG_SUFFIX}-${JOB_STAMP}"
+        job_name="savisol-${SAFE_EXPERIMENT}${TAG_SUFFIX}-${JOB_STAMP}"
         _submit "${job_name}" "${SAV_ISO_PY}" --experiment "${EXPERIMENT}" --lr "${LR}" --steps "${STEPS}" --seed "${SEED}" --out-dir "${OUT_DIR}"
         ;;
 
@@ -233,7 +267,7 @@ case "${1:-}" in
         OUT_DIR="${OUT_DIR:-${PROJECT_DIR}/results/gate_sensitivity/${EXPERIMENT}}"
         GATE_ARGS=(--experiment "${EXPERIMENT}" --lr "${LR}" --steps "${STEPS}" --seed "${SEED}" --out-dir "${OUT_DIR}")
         if [ -n "${TOP_K}" ]; then GATE_ARGS+=(--top-k "${TOP_K}"); fi
-        job_name="gatesens-${EXPERIMENT}${TAG_SUFFIX}-${JOB_STAMP}"
+        job_name="gatesens-${SAFE_EXPERIMENT}${TAG_SUFFIX}-${JOB_STAMP}"
         _submit "${job_name}" "${GATE_SENS_PY}" "${GATE_ARGS[@]}"
         ;;
 
