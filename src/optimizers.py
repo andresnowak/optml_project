@@ -110,6 +110,13 @@ class SpecMuon(torch.optim.Optimizer):
       - ``tail_mode``:
           ``gradient`` = paper Algorithm 1 tail, U diag(S) V^T;
           ``muon`` = true Muon tail, U V^T.
+      - ``momentum_mode`` controls where momentum is applied:
+          ``post_spectral`` = paper Algorithm 1, B_t = μB_{t-1} + O_t;
+          ``post_spectral_nesterov`` = Muon-style Nesterov lookahead after
+          the SVD/SAV transform;
+          ``pre_svd`` = Muon-style EMA before the SVD/SAV transform;
+          ``pre_svd_nesterov`` = torch.optim.Muon's Nesterov lookahead before
+          the SVD/SAV transform.
       - SAV-gating (``gate_window``/``gate_threshold``) bypasses SAV when the
         loss is dropping fast over the rolling window — collapses to the
         tail-only (paper-Muon) update; default ``gate_threshold=0`` disables.
@@ -120,6 +127,12 @@ class SpecMuon(torch.optim.Optimizer):
 
     _VALID_SIGMA_MODES = ("power", "clip", "truncate", "energy")
     _VALID_TAIL_MODES = ("gradient", "muon")
+    _VALID_MOMENTUM_MODES = (
+        "post_spectral",
+        "post_spectral_nesterov",
+        "pre_svd",
+        "pre_svd_nesterov",
+    )
     # Legacy aliases collapsed into ``power``: η/(σ+ε) ≡ power(β=1); η/(√σ+ε) ≡ power(β=0.5).
     _SIGMA_ALIASES = {"baseline": ("power", 1.0), "sqrt": ("power", 0.5)}
 
@@ -141,6 +154,7 @@ class SpecMuon(torch.optim.Optimizer):
         gate_window: int = 10,
         gate_threshold: float = 0.0,
         tail_mode: str = "gradient",
+        momentum_mode: str = "post_spectral",
     ):
         if sigma_mode in self._SIGMA_ALIASES:
             sigma_mode, power_beta = self._SIGMA_ALIASES[sigma_mode]
@@ -149,6 +163,10 @@ class SpecMuon(torch.optim.Optimizer):
             raise ValueError(f"sigma_mode must be one of {valid}, got {sigma_mode}")
         if tail_mode not in self._VALID_TAIL_MODES:
             raise ValueError(f"tail_mode must be one of {self._VALID_TAIL_MODES}, got {tail_mode}")
+        if momentum_mode not in self._VALID_MOMENTUM_MODES:
+            raise ValueError(
+                f"momentum_mode must be one of {self._VALID_MOMENTUM_MODES}, got {momentum_mode}"
+            )
         if kappa < 0:
             raise ValueError(f"kappa must be >= 0 (paper §2.1), got {kappa}")
         if not 0.0 < energy_threshold <= 1.0:
@@ -163,7 +181,7 @@ class SpecMuon(torch.optim.Optimizer):
                         sigma_clip=sigma_clip, sigma_truncate=sigma_truncate,
                         power_beta=power_beta, energy_threshold=energy_threshold,
                         gate_window=gate_window, gate_threshold=gate_threshold,
-                        tail_mode=tail_mode)
+                        tail_mode=tail_mode, momentum_mode=momentum_mode)
         super().__init__(params, defaults)
 
         # Compile the SVD-heavy step on CUDA. Keep MPS eager so metalcore can
@@ -211,6 +229,7 @@ class SpecMuon(torch.optim.Optimizer):
             gate_window: int = group["gate_window"]
             gate_threshold: float = group["gate_threshold"]
             tail_mode: str = group["tail_mode"]
+            momentum_mode: str = group["momentum_mode"]
 
             # Paper §2.1: E(Θ) := f(Θ) + κ ; Algorithm 1 writes √L_t for √E_t.
             energy = float(loss.item()) + kappa
@@ -237,26 +256,39 @@ class SpecMuon(torch.optim.Optimizer):
                 # the paper's Algorithm 1 is defined for matrix gradients only.
                 G2 = G.reshape(G.shape[0], -1) if G.dim() > 2 else G
 
-                G_hat = G2 / (torch.linalg.norm(G2) + eps)          # paper line 5
-
-                U, S, Vh = torch.linalg.svd(G_hat, full_matrices=False)   # paper line 6
-                # U: (m, r), S: (r,), Vh: (r, n)  where r = min(m, n).
-
                 state = self.state[p]
                 if not state:                                        # paper lines 1-2
-                    k_act = min(k, S.shape[0])
                     state["momentum_buffer"] = torch.zeros_like(G2)  # B_0 ← 0
-                    # r_0 ← √L_0 · 1  — the first call to step() lands here.
-                    state["r"] = torch.full(
-                        (k_act,), sqrt_loss, dtype=G2.dtype, device=G2.device
-                    )
-                    state["k_act"] = k_act
                     # SAV-gating state: rolling loss window + last gate state.
                     # Default gate_threshold=0 ⇒ gate disabled ⇒ always active (paper default).
                     state["loss_window"] = collections.deque(maxlen=gate_window)
                     state["sav_active_prev"] = True
 
                 B: torch.Tensor = state["momentum_buffer"]
+                if momentum_mode == "pre_svd":
+                    B_new = B.lerp(G2, 1.0 - mu)
+                    state["momentum_buffer"] = B_new
+                    G_for_svd = B_new
+                elif momentum_mode == "pre_svd_nesterov":
+                    B_new = B.lerp(G2, 1.0 - mu)
+                    state["momentum_buffer"] = B_new
+                    G_for_svd = G2.lerp(B_new, mu)
+                else:
+                    G_for_svd = G2
+
+                G_hat = G_for_svd / (torch.linalg.norm(G_for_svd) + eps)  # paper line 5
+
+                U, S, Vh = torch.linalg.svd(G_hat, full_matrices=False)   # paper line 6
+                # U: (m, r), S: (r,), Vh: (r, n)  where r = min(m, n).
+
+                if "r" not in state:
+                    k_act = min(k, S.shape[0])
+                    # r_0 ← √L_0 · 1  — the first call to step() lands here.
+                    state["r"] = torch.full(
+                        (k_act,), sqrt_loss, dtype=G2.dtype, device=G2.device
+                    )
+                    state["k_act"] = k_act
+
                 r: torch.Tensor = state["r"]
                 k_act: int = state["k_act"]
 
@@ -372,9 +404,17 @@ class SpecMuon(torch.optim.Optimizer):
                 lr_scale = (
                     _keller_jordan_shape_scale(G2.shape) if adjust_lr_fn == "shape_scaling" else 1.0
                 )
-                B_new = mu * B + O                                   # paper line 24
-                state["momentum_buffer"] = B_new
-                p.add_(B_new.reshape(orig_shape), alpha=-lr * lr_scale)
+                if momentum_mode == "post_spectral":
+                    B_new = mu * B + O                               # paper line 24
+                    state["momentum_buffer"] = B_new
+                    update = B_new
+                elif momentum_mode == "post_spectral_nesterov":
+                    B_new = B.lerp(O, 1.0 - mu)
+                    state["momentum_buffer"] = B_new
+                    update = O.lerp(B_new, mu)
+                else:
+                    update = O
+                p.add_(update.reshape(orig_shape), alpha=-lr * lr_scale)
 
         return loss
 
@@ -398,7 +438,7 @@ OPTIMIZER_KWARGS: dict[str, frozenset[str]] = {
     "specmuon": frozenset({"momentum", "top_k", "sav_smooth", "eps", "kappa",
                            "adjust_lr_fn", "sigma_mode", "sigma_clip", "sigma_truncate",
                            "power_beta", "energy_threshold",
-                           "gate_window", "gate_threshold", "tail_mode"}),
+                           "gate_window", "gate_threshold", "tail_mode", "momentum_mode"}),
 }
 
 # Optimizers that don't accept the standard ``weight_decay`` argument.

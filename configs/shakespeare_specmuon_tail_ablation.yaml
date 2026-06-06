@@ -12,6 +12,7 @@ steps: 3000
 log_every: 20
 
 adjust_lr_fn: shape_scaling
+momentum_mode: post_spectral
 backend: wandb
 wandb_project: mlo-specmuon-shakespeare
 log_sav_r: true

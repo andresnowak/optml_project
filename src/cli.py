@@ -45,6 +45,10 @@ SWEEP_SPECS = {
     "gate_threshold": {"type": float, "optimizers": _optimizers_accepting("gate_threshold")},
     "tail_mode": {"type": str, "choices": {"gradient", "muon"},
                   "optimizers": _optimizers_accepting("tail_mode")},
+    "momentum_mode": {"type": str,
+                      "choices": {"post_spectral", "post_spectral_nesterov",
+                                  "pre_svd", "pre_svd_nesterov"},
+                      "optimizers": _optimizers_accepting("momentum_mode")},
 }
 
 
@@ -64,6 +68,7 @@ _FLAG_TO_KWARG: dict[str, str] = {
     "--gate-window": "gate_window",
     "--gate-threshold": "gate_threshold",
     "--tail-mode": "tail_mode",
+    "--momentum-mode": "momentum_mode",
     "--ns-steps": "ns_steps",
     "--momentum": "momentum",
     "--beta1": "betas",
@@ -110,13 +115,14 @@ def parse_sweep_arg(raw: str) -> tuple[str, list[object]]:
 
     parsed: list[object] = []
     for value in values:
-        if "choices" in spec and value not in spec["choices"]:
-            choices = ", ".join(sorted(spec["choices"]))
-            raise ValueError(f"invalid value {value!r} for sweep {name!r}; choose from {choices}")
         try:
-            parsed.append(spec["type"](value))
+            parsed_value = spec["type"](value)
         except ValueError as exc:
             raise ValueError(f"invalid value {value!r} for sweep {name!r}") from exc
+        if "choices" in spec and parsed_value not in spec["choices"]:
+            choices = ", ".join(str(choice).lower() for choice in sorted(spec["choices"]))
+            raise ValueError(f"invalid value {value!r} for sweep {name!r}; choose from {choices}")
+        parsed.append(parsed_value)
     return name, parsed
 
 
@@ -272,6 +278,14 @@ def _build_parser() -> argparse.ArgumentParser:
     opt.add_argument("--tail-mode", choices=("gradient", "muon"), default=None,
                      help="SpecMuon tail update after SAV top-k: "
                           "`gradient` keeps paper U diag(S) V^T tail; `muon` uses U V^T.")
+    opt.add_argument("--momentum-mode",
+                     choices=("post_spectral", "post_spectral_nesterov",
+                              "pre_svd", "pre_svd_nesterov"),
+                     default=None,
+                     help="SpecMuon momentum placement: `post_spectral` is paper Algorithm 1; "
+                          "`post_spectral_nesterov` uses Nesterov after SVD/SAV; "
+                          "`pre_svd` applies an EMA before SVD/SAV; `pre_svd_nesterov` "
+                          "uses PyTorch Muon's Nesterov lookahead before SVD/SAV.")
 
     log_group = parser.add_argument_group("logging")
     log_group.add_argument("--backend", choices=("matplotlib", "wandb"), default=None,
@@ -393,7 +407,7 @@ def main() -> None:
         "momentum", "ns_steps", "top_k", "sav_smooth", "kappa",
         "adjust_lr_fn", "sigma_mode", "sigma_clip", "sigma_truncate",
         "power_beta", "energy_threshold", "gate_window", "gate_threshold",
-        "tail_mode", "eps",
+        "tail_mode", "momentum_mode", "eps",
     )
 
     def build_run_settings(overrides: dict[str, object]) -> tuple[float, float, dict]:
