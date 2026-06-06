@@ -166,6 +166,18 @@ class SpecMuon(torch.optim.Optimizer):
                         tail_mode=tail_mode)
         super().__init__(params, defaults)
 
+        # Compile the SVD-heavy step on CUDA. Keep MPS eager so metalcore can
+        # route unsupported linalg.svd calls through its CPU fallback.
+        device_type = None
+        for group in self.param_groups:
+            for p in group["params"]:
+                device_type = p.device.type
+                break
+            if device_type is not None:
+                break
+        if device_type == "cuda":
+            self.step = torch.compile(self.step)  # type: ignore[method-assign]
+
     @torch.no_grad()
     def step(self, closure=None, loss: torch.Tensor | None = None):  # type: ignore[override]
         """Perform one optimisation step (Algorithm 1 of arXiv:2602.16167).

@@ -33,15 +33,20 @@ class _CausalSelfAttention(nn.Module):
         self.proj = nn.Linear(d_model, d_model, bias=False)
         self.register_buffer("mask", torch.tril(torch.ones(block_size, block_size)))
 
+    @torch.compile
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
         q, k, v = self.qkv(x).split(C, dim=2)
+
         q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+
         att = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)
         att = att.masked_fill(self.mask[:T, :T] == 0, float("-inf"))
+
         y = (F.softmax(att, dim=-1) @ v).transpose(1, 2).contiguous().view(B, T, C)
+
         return self.proj(y)
 
 
@@ -52,7 +57,8 @@ class _MLP(nn.Module):
         self.fc2 = nn.Linear(4 * d_model, d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc2(F.gelu(self.fc1(x)))
+        # Use RELU^2 for the activation function.
+        return self.fc2(F.relu(self.fc1(x)).square())
 
 
 class _TransformerBlock(nn.Module):
