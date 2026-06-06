@@ -16,8 +16,8 @@ uv sync
 Optional `.env`:
 
 ```bash
-WANDB_PROJECT=mlo-specmuon
-WANDB_ENTITY=cs-439-project
+WANDB_PROJECT=<wandb-project>
+WANDB_ENTITY=<wandb-entity>
 ```
 
 ## Running
@@ -39,6 +39,7 @@ uv run python main.py --config configs/matrix_factorization.yaml
 | name | description |
 |---|---|
 | `linear_regression` | Synthetic linear dataset, MSE loss |
+| `ill_conditioned_linear_regression` | Linear regression with controlled condition number |
 | `matrix_factorization` | Recover a low-rank matrix via two factor matrices |
 | `shakespeare` | Char-level mini-GPT on tinyshakespeare |
 
@@ -85,12 +86,25 @@ uv run python main.py --optimizer specmuon \
   --backend wandb
 ```
 
+Shakespeare SpecMuon tail/momentum ablation:
+
+```bash
+uv run python main.py --config configs/shakespeare_specmuon_tail_ablation.yaml \
+  --sweep top_k=0,1,8,16,32 \
+  --sweep tail_mode=gradient,muon \
+  --sweep momentum_mode=post_spectral,post_spectral_nesterov \
+  --sweep min_lr=0,1e-5 \
+  --sweep scheduler=linear,cosine
+```
+
 ## Optimizer hyperparameters
 
 | flag | applies to |
 |---|---|
 | `--lr` | all |
+| `--min-lr` | all (minimum LR for `linear`/`cosine` schedulers; default 0) |
 | `--weight-decay` | all except muon, specmuon |
+| `--scheduler` | all (`linear` default, `cosine`, or `none`; torch LR scheduler stepped once per train step) |
 | `--momentum` | sgd, muon, specmuon |
 | `--beta1`, `--beta2` | adam, adamw |
 | `--eps` | adam, adamw, specmuon |
@@ -105,6 +119,9 @@ uv run python main.py --optimizer specmuon \
 | `--sigma-truncate` | specmuon (`truncate` mode: drop σ < threshold·σ_max) |
 | `--energy-threshold` | specmuon (`energy` mode: dynamic k by cumulative σ² ≥ τ) |
 | `--gate-window`, `--gate-threshold` | specmuon (SAV-gating; τ=0 disables — paper default) |
+| `--tail-mode` | specmuon tail update after top-k (`gradient` = paper `U diag(S) V^T`, `muon` = `U V^T`) |
+| `--momentum-mode` | specmuon momentum placement (`post_spectral`, `post_spectral_nesterov`, `pre_svd`, `pre_svd_nesterov`) |
+| `--specmuon-target` | shakespeare layer-selectivity ablation (`all`, `mlp`, `attention`) |
 
 `--sweep PARAM=v1,v2,...` accepts all of the above keyword names (e.g.
 `--sweep sigma_mode=baseline,clip`).
@@ -119,13 +136,89 @@ uv run python main.py --optimizer specmuon \
 | `--smooth N` | rolling-mean window of N steps |
 | `--save-plot PATH` | save figure to file |
 | `--log-grad-svd` | log singular values of parameter gradients |
-| `--log-sav-r` | log SpecMuon's SAV `r` tracker and `last_iota` diagnostic |
+| `--log-sav-r` | log SpecMuon SAV diagnostics: top-k `sav_r`, `sav_sigma_scale`, `sav_iota`, `sav_iota_w`, `sav_sigma_min`, `sav_sigma_max` |
 | `--log-grad-norms` | log per-parameter gradient norms + total |
 | `--log-weight-norms` | log per-parameter weight norms |
 | `--svd-every N` | SVD logging frequency (default: same as `--log-every`) |
 | `--svd-top-k K` | only show top-k singular values |
 
 `--wandb-project` and `--wandb-entity` default to `WANDB_PROJECT` / `WANDB_ENTITY` from `.env`, then fall back to `mlo-specmuon` / `cs-439-project`.
+WandB runs also receive the resolved CLI/config settings, optimizer kwargs,
+experiment kwargs, run tag, SpecMuon target, and model parameter count in the
+run config.
+
+## RunAI cluster workflow
+
+Sync the local checkout to the RunAI submit host, then submit from there:
+
+```bash
+./scripts/sync_to_rcp.sh
+```
+
+```bash
+CONFIG=configs/shakespeare_specmuon_tail_ablation.yaml \
+OPTIMIZER=specmuon \
+BACKEND=wandb \
+LOG_SAV_R=1 \
+WANDB_PROJECT=mlo-specmuon-shakespeare \
+WANDB_ENTITY=<wandb-entity> \
+SWEEP="top_k=0,1,8,16,32 tail_mode=gradient,muon momentum_mode=post_spectral,post_spectral_nesterov" \
+./scripts/run_job.sh sweep
+```
+
+`scripts/run_job.sh` supports these subcommands:
+
+```text
+single, sanity, sweep, compare-best-lr, sav-isolation, gate-sensitivity,
+selective-sav, shakespeare-long, interactive, logs, delete, list
+```
+
+RunAI / cluster environment variables:
+
+| env var | effect |
+|---|---|
+| `ENV_FILE` | dotenv file loaded before defaults; default `.env` |
+| `IMAGE` / `RUNAI_IMAGE` | container image; repo default is the MLO uv image |
+| `CLUSTER_HOME` | home PVC path inside the RunAI container |
+| `PROJECT_DIR` | project path inside the RunAI container |
+| `LDAP_UID`, `LDAP_GID` | use explicit RunAI UID/GID instead of `--run-as-user` |
+| `NODE_POOLS` | optional RunAI `--node-pools` value |
+| `WANDB_API_KEY` | forwarded into the container |
+| `WANDB_DIR` | persistent WandB cache/log directory; default `${CLUSTER_HOME}/.wandb` |
+| `UV_CACHE_DIR` | persistent uv cache; default `${CLUSTER_HOME}/.cache/uv` |
+| `UV_PYTHON_INSTALL_DIR` | persistent uv Python install dir; default `${CLUSTER_HOME}/.uv` |
+| `JOB_STAMP` | override timestamp suffix used in RunAI job names |
+
+Training/config environment variables forwarded to `main.py`:
+
+| env var | forwarded as |
+|---|---|
+| `CONFIG` | `--config` |
+| `EXPERIMENT` | `--experiment` when `CONFIG` is unset |
+| `OPTIMIZER` | `--optimizer` |
+| `STEPS`, `LR`, `MIN_LR`, `SCHEDULER`, `SEED`, `LOG_EVERY` | training controls |
+| `TOP_K`, `SIGMA_MODE`, `TAIL_MODE`, `GATE_THRESHOLD`, `GATE_WINDOW`, `KAPPA` | SpecMuon controls |
+| `CONDITION_NUMBER` | ill-conditioned linear-regression override |
+| `BACKEND`, `WANDB_PROJECT`, `WANDB_ENTITY`, `LOG_SAV_R` | logging controls |
+| `CHECKPOINT_DIR`, `CHECKPOINT_EVERY` | checkpoint controls |
+| `SPECMUON_TARGET` | `--specmuon-target` |
+| `COMPARE_OPTIMIZERS` | optimizer subset for comparison modes |
+| `RUN_TAG` | suffix for RunAI job names and WandB run names |
+| `LR_MIN`, `LR_MAX`, `LR_N` | best-LR comparison grid |
+| `SWEEP` | space-separated sweep clauses for `run_job.sh sweep` |
+
+`scripts/sync_to_rcp.sh` supports `LOCAL_DIR`, `REMOTE_HOST`, `REMOTE_DIR`,
+`USER`, and `DRY_RUN=1`.
+
+Fetch WandB runs back into local artifacts:
+
+```bash
+uv run python scripts/fetch_wandb_results.py \
+  --entity <wandb-entity> \
+  --project mlo-specmuon-shakespeare \
+  --filter "sweep" \
+  --log-y
+```
 
 ## Mechanism-isolation scripts
 
@@ -164,6 +257,13 @@ or `mps` to override.
     is dropping fast over a rolling window, collapsing to the tail-only update —
     the §4.2 regime where Muon-tail outperforms SAV. `gate_threshold=0`
     reproduces the paper default (always-on SAV) byte-identically.
+  - **Tail-mode ablation** (`tail_mode=gradient|muon`) separates the paper
+    gradient tail from a true Muon all-ones tail for the non-top-k directions.
+  - **Momentum-mode ablation** compares paper post-spectral momentum against
+    Nesterov variants and pre-SVD momentum placement.
+  - **Layer-target ablation** (`specmuon_target=mlp|attention`) applies the
+    SAV branch only to one transformer block type while routing the remaining
+    matrix weights through the top-k=0 tail update.
   - **`last_iota` diagnostic** measures per-step SAV-intervention magnitude;
     log it with `--log-sav-r`.
 
@@ -171,4 +271,11 @@ or `mps` to override.
 
 ```bash
 uv run pytest tests/
+```
+
+Short smoke checks:
+
+```bash
+uv run python main.py --experiment linear_regression --optimizer adamw --steps 5
+uv run python main.py --experiment linear_regression --optimizer specmuon --steps 5 --adjust-lr-fn shape_scaling
 ```
