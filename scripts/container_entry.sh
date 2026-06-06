@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
-# Container entrypoint for cluster runs. Installs deps into the base PyTorch
-# image, sets PYTHONPATH, cd's to the project dir, then execs the given command.
-set -euo pipefail
+# ============================================================
+# Cluster container entry. Invoked by run_job.sh, not locally.
+#
+# Invocation (after RunAI/k8s flattens argv):
+#   bash /abs/scripts/container_entry.sh /abs/<script>.py --flag value ...
+#
+# Resolves the project dir from this script's own location, cd's in so relative
+# paths the scripts use (configs/, data/, results/) resolve, sets PYTHONPATH so
+# `import dynmuon` works, installs the few deps the pytorch base image lacks,
+# then execs `python "$@"`. Deps install to $HOME/.local (on the PVC), so the
+# next job on the same image finds them already present.
+# ============================================================
+set -e
 
-PROJECT_DIR="${PROJECT_DIR:-/workspace/project}"
-cd "$PROJECT_DIR"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-pip install --no-cache-dir numpy pyyaml tiktoken datasets wandb matplotlib >/dev/null
+export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
+cd "${PROJECT_DIR}"
 
-export PYTHONPATH="$PROJECT_DIR:${PYTHONPATH:-}"
+python -m pip install --quiet --no-cache-dir --user --disable-pip-version-check \
+    pyyaml tiktoken datasets wandb matplotlib
 
-echo "[container_entry] running: $*"
-exec "$@"
+exec python "$@"
