@@ -21,6 +21,9 @@ class BaseLogger(ABC):
     def start_run(self, name: str, config: dict | None = None, metric_prefix: str = "") -> None:
         pass
 
+    def update_config(self, config: dict) -> None:
+        pass
+
 
 class MemoryLogger(BaseLogger):
     """In-memory sink for batch sweeps; tensor metrics (e.g. SVD logs) are dropped."""
@@ -109,10 +112,15 @@ class WandbLogger(BaseLogger):
     def start_run(self, name: str, config: dict | None = None, metric_prefix: str = "") -> None:
         if self._run_active:
             wandb.finish()
+        run_config = {**self._base_config, **(config or {})}
         wandb.init(project=self._project, entity=self._entity, name=name,
-                   config=config if config is not None else self._base_config)
+                   config=run_config)
         self._run_active = True
         self._metric_prefix = metric_prefix
+
+    def update_config(self, config: dict) -> None:
+        if self._run_active:
+            wandb.config.update(config, allow_val_change=True)
 
     def log(self, metrics: dict, step: int) -> None:
         payload = {}
@@ -120,8 +128,14 @@ class WandbLogger(BaseLogger):
             name = name.removeprefix(self._metric_prefix)
             if isinstance(value, torch.Tensor):
                 svs = value.detach().float().cpu().numpy().reshape(-1)
-                n_svs = len(svs) if self.svd_top_k is None else min(self.svd_top_k, len(svs))
-                element_name = "r" if name.startswith("sav_r/") else "sigma"
+                if name.startswith("sav_r/"):
+                    element_name = "r"
+                elif name.startswith("sav_sigma_scale/"):
+                    element_name = "sigma_scale"
+                else:
+                    element_name = "sigma"
+                log_all_values = name.startswith(("sav_r/", "sav_sigma_scale/"))
+                n_svs = len(svs) if (self.svd_top_k is None or log_all_values) else min(self.svd_top_k, len(svs))
                 for i in range(n_svs):
                     payload[f"{name}/{element_name}_{i + 1}"] = float(svs[i])
                 finite_svs = svs[np.isfinite(svs)]

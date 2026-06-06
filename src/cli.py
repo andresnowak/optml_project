@@ -412,6 +412,29 @@ def main() -> None:
             opt_kwargs["betas"] = (beta1, beta2)
         return lr, weight_decay, opt_kwargs
 
+    def build_run_config(
+        optimizer_name: str,
+        lr: float,
+        weight_decay: float,
+        opt_kwargs: dict,
+        overrides: dict[str, object],
+    ) -> dict:
+        return {
+            **vars(args),
+            "mode": mode,
+            "run_overrides": dict(overrides),
+            "experiment": args.experiment,
+            "optimizer": optimizer_name,
+            "lr": lr,
+            "weight_decay": weight_decay,
+            "steps": args.steps,
+            "batch_size": args.batch_size,
+            "experiment_kwargs": dict(experiment_kwargs),
+            "optimizer_kwargs": dict(opt_kwargs),
+            **experiment_kwargs,
+            **opt_kwargs,
+        }
+
     def run_paired(
         optimizer_name: str,
         logger=None,
@@ -424,9 +447,7 @@ def main() -> None:
         lr, weight_decay, opt_kwargs = build_run_settings(overrides or {})
         if logger is not None:
             wandb_name = build_wandb_run_name(args.experiment, optimizer_name, lr, weight_decay, opt_kwargs)
-            run_config = {"experiment": args.experiment, "optimizer": optimizer_name,
-                          "lr": lr, "weight_decay": weight_decay, "steps": args.steps,
-                          "batch_size": args.batch_size, **opt_kwargs}
+            run_config = build_run_config(optimizer_name, lr, weight_decay, opt_kwargs, overrides or {})
             metric_prefix = f"{run_name}/" if run_name else ""
             logger.start_run(wandb_name, run_config, metric_prefix=metric_prefix)
         cfg = TrainConfig(

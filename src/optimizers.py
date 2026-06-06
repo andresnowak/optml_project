@@ -294,6 +294,11 @@ class SpecMuon(torch.optim.Optimizer):
                 if not sav_active:
                     k_step = 0
 
+                state["last_sigma"] = S[:k_step].detach().clone()
+                state["last_sav_scale"] = torch.empty_like(state["last_sigma"])
+                state["last_sigma_min"] = float(S.min().item()) if S.numel() else 0.0
+                state["last_sigma_max"] = float(S.max().item()) if S.numel() else 0.0
+
                 # paper line 11: η'_j ← η/(σ_j^β + ϵ).  β=1 (default) is the
                 # paper's baseline; β=0.5 ≡ legacy "sqrt"; β=0 decouples the
                 # step from σ. ``clip`` is the only mode that does NOT use σ^β.
@@ -318,6 +323,7 @@ class SpecMuon(torch.optim.Optimizer):
                 state["last_iota_w"] = 0.0
                 if k_step > 0:
                     sav_scale = r_new / (sqrt_loss + eps)
+                    state["last_sav_scale"] = sav_scale.detach().clone()
                     dev = (sav_scale - s_k).abs()
                     state["last_iota"] = float(dev.mean().item())
                     w_denom = s_k.sum() + eps

@@ -140,6 +140,12 @@ def train(
     experiment = cls(device=config.device, batch_size=config.batch_size, **exp_kwargs)
 
     model = experiment.build_model()
+    total_params = sum(p.numel() for p in model.parameters())
+    if log_sink is not None:
+        log_sink.update_config({
+            "model_params_total": total_params,
+            "model_params_total_m": total_params / 1_000_000,
+        })
     # ``aux_specmuon`` is the second SpecMuon used by the selective-SAV
     # ablation: when ``specmuon_target ∈ {"mlp","attention"}`` it carries the
     # *untargeted* matrix params with ``top_k=0`` (paper-tail-only update),
@@ -257,10 +263,14 @@ def train(
                     pstate = opt.state.get(param)
                     if pstate is not None and "r" in pstate:
                         log_sink.log({f"{prefix}sav_r/{name}": pstate["r"].detach()}, step)
+                        if "last_sav_scale" in pstate:
+                            log_sink.log({f"{prefix}sav_sigma_scale/{name}": pstate["last_sav_scale"]}, step)
                         if "last_iota" in pstate:
                             log_sink.log({
                                 f"{prefix}sav_iota/{name}": pstate["last_iota"],
                                 f"{prefix}sav_iota_w/{name}": pstate["last_iota_w"],
+                                f"{prefix}sav_sigma_min/{name}": pstate.get("last_sigma_min", 0.0),
+                                f"{prefix}sav_sigma_max/{name}": pstate.get("last_sigma_max", 0.0),
                             }, step)
                         break
 
