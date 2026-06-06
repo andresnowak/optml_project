@@ -5,13 +5,13 @@ description = "Optimizer convergence benchmarks for small PyTorch problems."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-  "torch>=2.9<2.11",
+  "torch>=2.9,<2.11",
   "matplotlib",
   "wandb>=0.26.1",
   "jupyter>=1.1.1",
   "pytest>=9.0.3",
   "pyyaml",
-  "metalcore",
+  "metalcore; sys_platform == 'darwin'",
 ]
 
 [tool.uv]
