@@ -1,0 +1,4 @@
+# Baseline: AdamW on all parameters (no spectral shaping).
+extends: gpt124m.yaml
+matrix_optimizer: adamw
+run_name: adamw

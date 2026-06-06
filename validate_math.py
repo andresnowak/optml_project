@@ -132,6 +132,24 @@ def test_logistic_bounds_and_orientation():
         assert pmin - 1e-9 <= p <= pmax + 1e-9
 
 
+@pytest.mark.parametrize("fixed_p,name", [(0.0, "muon"), (1.0, "sgd")])
+def test_fixed_mode_constant_exponent(fixed_p, name):
+    """routing_mode='fixed' shapes every step at the same exponent: p=0 is Muon
+    (polar factor, singular values -> 1), p=1 leaves the gradient unshaped."""
+    torch.manual_seed(2)
+    w = torch.zeros(8, 12, dtype=torch.float64, requires_grad=True)
+    opt = DynMuonRoute([w], lr=0.1, momentum=0.0, nesterov=False,
+                       routing_mode="fixed", fixed_p=fixed_p, compute_mode="svd",
+                       adjust_lr_fn=None)
+    w.grad = torch.randn(8, 12, dtype=torch.float64)
+    opt.step()
+    assert opt.state[w]["last_p"] == fixed_p
+    update = -w.detach()                     # lr=0.1 -> update = 0.1 * D(p)
+    sv = torch.linalg.svdvals(update / 0.1)  # singular values of D(p)
+    if name == "muon":                       # D(0) = U Vᵀ -> all singular values 1
+        assert torch.allclose(sv, torch.ones_like(sv), atol=1e-6)
+
+
 def test_global_schedule_anneals():
     """p_t runs 1.0 -> -0.25 across total_steps."""
     w = torch.zeros(6, 8, requires_grad=True)

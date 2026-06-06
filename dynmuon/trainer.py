@@ -55,8 +55,13 @@ def _layer_type(name: str) -> str:
 
 
 def build_optimizers(model: GPT, cfg: dict):
-    """(dynmuon, adamw): matrices -> DynMuonRoute groups by layer type;
-    embeddings/norms/biases -> AdamW. Tied weights are deduplicated by id."""
+    """Return (dynmuon, adamw).
+
+    ``matrix_optimizer="dynmuon"`` (default): matrices -> DynMuonRoute grouped by
+    layer type; embeddings/norms/biases -> AdamW (dynmuon may be None only if the
+    model has no matrices). ``matrix_optimizer="adamw"`` (the AdamW baseline):
+    every parameter -> AdamW and dynmuon is None. Tied weights are deduped by id.
+    """
     seen: set[int] = set()
     groups: dict[str, list] = {"attn": [], "mlp": [], "other": []}
     adam_params: list = []
@@ -67,10 +72,18 @@ def build_optimizers(model: GPT, cfg: dict):
         is_embedding = name.endswith("wte.weight") or name.endswith("wpe.weight")
         (adam_params if (p.ndim < 2 or is_embedding) else groups[_layer_type(name)]).append(p)
 
-    route = cfg.get("route", {})
-    default = route.get("default", {"mu": 0.0, "omega": 1.0})
+    if cfg.get("matrix_optimizer", "dynmuon") == "adamw":
+        adam_params += [p for ps in groups.values() for p in ps]
+        groups = {"attn": [], "mlp": [], "other": []}
+
+    routing_mode = cfg["routing_mode"]
+    # Per-(routing_mode, layer_type) logistic params; routers only.
+    route_mode = cfg.get("route", {}).get(routing_mode, {})
+    fallback = route_mode.get("default", {"mu": 0.0, "omega": 1.0})
     param_groups = [
-        {"params": params, "mu": route.get(lt, default)["mu"], "omega": route.get(lt, default)["omega"]}
+        {"params": params,
+         "mu": route_mode.get(lt, fallback)["mu"],
+         "omega": route_mode.get(lt, fallback)["omega"]}
         for lt, params in groups.items() if params
     ]
     dynmuon = DynMuonRoute(
@@ -78,15 +91,16 @@ def build_optimizers(model: GPT, cfg: dict):
         lr=cfg["muon_lr"],
         momentum=cfg.get("momentum", 0.95),
         nesterov=cfg.get("nesterov", True),
-        routing_mode=cfg["routing_mode"],
+        routing_mode=routing_mode,
         compute_mode=cfg["compute_mode"],
         ns_variant=cfg.get("ns_variant", "quintic"),
         ns_steps=cfg.get("ns_steps", 5),
         adjust_lr_fn=cfg.get("adjust_lr_fn", "spectral_norm"),
+        fixed_p=cfg.get("fixed_p", 0.0),
         tau_ratio=cfg.get("tau_ratio", 0.04),
         width_ratio=cfg.get("width_ratio", 0.04),
-        total_steps=cfg["max_steps"] if cfg["routing_mode"] == "global_schedule" else None,
-    )
+        total_steps=cfg["max_steps"] if routing_mode == "global_schedule" else None,
+    ) if param_groups else None
     adamw = torch.optim.AdamW(
         adam_params, lr=cfg["adam_lr"], betas=(0.9, 0.95),
         weight_decay=cfg.get("weight_decay", 0.1),
@@ -187,14 +201,13 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
     for step in range(max_steps):
         t0 = time.perf_counter()
         f = lr_factor(step, warmup, max_steps, cfg.get("min_lr_ratio", 0.1))
-        for g in dynmuon.param_groups:
-            g["lr"] = base_muon * f
+        if dynmuon is not None:
+            for g in dynmuon.param_groups:
+                g["lr"] = base_muon * f
+            dynmuon.zero_grad(set_to_none=True)
         if adamw is not None:
             for g in adamw.param_groups:
                 g["lr"] = base_adam * f
-
-        dynmuon.zero_grad(set_to_none=True)
-        if adamw is not None:
             adamw.zero_grad(set_to_none=True)
 
         loss_accum = 0.0
@@ -208,16 +221,19 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
         if clip:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
-        dynmuon.step(noise_hook=noise_hook)
+        if dynmuon is not None:
+            dynmuon.step(noise_hook=noise_hook)
         if adamw is not None:
             adamw.step()
 
         dt = time.perf_counter() - t0
         if step % cfg.get("log_every", 10) == 0 or step == max_steps - 1:
-            print(f"step {step:5d} | loss {loss_accum:.4f} | lr {base_muon * f:.2e} | {dt * 1e3:.0f}ms")
+            lr_now = (base_muon if dynmuon is not None else base_adam) * f
+            print(f"step {step:5d} | loss {loss_accum:.4f} | lr {lr_now:.2e} | {dt * 1e3:.0f}ms")
             if logger is not None:
-                logger.log({"train/loss": loss_accum, "lr": base_muon * f}, step=step)
-            log_routing(model, dynmuon, step, logger)
+                logger.log({"train/loss": loss_accum, "lr": lr_now}, step=step)
+            if dynmuon is not None:
+                log_routing(model, dynmuon, step, logger)
 
         if cfg.get("eval_every") and (step % cfg["eval_every"] == 0 or step == max_steps - 1):
             vloss = estimate_loss(model, val_data, block_size, batch_size, device, amp_ctx,

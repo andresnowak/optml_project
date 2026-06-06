@@ -35,8 +35,11 @@ case "$CMD" in
   exp2)
     PY=(python experiments/exp2_noise_injection.py "${EXTRA[@]}")
     ;;
+  baselines)
+    PY=(python experiments/baselines_step_efficiency.py "${EXTRA[@]}")
+    ;;
   *)
-    echo "usage: $0 {sanity|single|exp1|exp2} [extra args]" >&2
+    echo "usage: $0 {sanity|single|exp1|exp2|baselines} [extra args]" >&2
     exit 1
     ;;
 esac

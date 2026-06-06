@@ -9,12 +9,3 @@ warmup_steps: 400
 batch_size: 12
 grad_accum: 40            # ~0.5M tokens/step at block_size 1024
 eval_every: 500
-
-# Per-layer-type routing logistic, scaled to d ≈ 768. Stable-rank proxy in [1, d];
-# attention is centered low/narrow so it resists going negative (stays p >= 0),
-# MLP is centered higher so low stable rank routes toward p = -0.25.
-route:
-  default: {mu: 192.0, omega: 96.0}
-  attn:    {mu: 96.0,  omega: 96.0}
-  mlp:     {mu: 256.0, omega: 96.0}
-  other:   {mu: 192.0, omega: 96.0}

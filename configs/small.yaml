@@ -8,10 +8,3 @@ warmup_steps: 100
 batch_size: 16
 grad_accum: 1
 eval_every: 200
-
-# Routing logistic scaled to d ≈ 256.
-route:
-  default: {mu: 64.0, omega: 32.0}
-  attn:    {mu: 32.0, omega: 32.0}
-  mlp:     {mu: 96.0, omega: 32.0}
-  other:   {mu: 64.0, omega: 32.0}

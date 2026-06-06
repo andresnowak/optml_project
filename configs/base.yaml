@@ -6,8 +6,10 @@ seed: 0
 mlp: gelu                  # gelu | gated
 data_dir: data/wikitext103
 
-# routing
-routing_mode: stable_rank  # stable_rank | snr | alignment | global_schedule
+# method
+matrix_optimizer: dynmuon  # dynmuon (DynMuonRoute on matrices) | adamw (AdamW baseline)
+routing_mode: stable_rank  # fixed | global_schedule | stable_rank | snr | alignment
+fixed_p: 0.0               # used when routing_mode=fixed (0.0 = Muon, 1.0 = SGD)
 compute_mode: ns           # ns (fast Newton-Schulz/eigen) | svd (exact)
 ns_variant: quintic        # quintic (reference DynMuon) | cubic (textbook)
 ns_steps: 5                # cubic iterations (quintic is fixed at 5)
@@ -36,10 +38,18 @@ wandb_project: dynmuon-route
 # experiment 2 — anisotropic noise injection (0 disables)
 noise_lambda: 0.0
 
-# Per-layer-type routing logistic:
+# Per-(routing_mode, layer_type) routing logistic:
 #   p = p_min + (p_max-p_min) / (1 + exp(-(x - mu)/omega))
-# Stable-rank proxy x is in [1, d]; omega > 0 => p increases with x.
-# Defaults below are model-agnostic fallbacks; each model config overrides
-# `route` with values scaled to its d = min(rows, cols).
+# Proxies are scale-invariant (stable rank is normalized by d), so these values
+# are model-agnostic. omega > 0 => p increases with x; omega < 0 => decreases.
+# Per layer type we give attention a lower center than MLP so attention resists
+# negative p (stays p >= 0) while MLP routes toward p = -0.25 at low stable rank.
 route:
-  default: {mu: 0.5, omega: 0.25}
+  stable_rank:               # x = sr/d in (0, 1]; high => isotropic => p >= 0
+    attn:    {mu: 0.35, omega: 0.12}
+    mlp:     {mu: 0.60, omega: 0.12}
+    default: {mu: 0.50, omega: 0.12}
+  snr:                       # x = gamma in [0, inf); low (noisy) => p >= 0 (omega < 0)
+    default: {mu: 1.5, omega: -0.5}
+  alignment:                 # x = alpha in [0, 1]; high => p -> 1
+    default: {mu: 0.3, omega: 0.1}

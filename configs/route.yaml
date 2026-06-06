@@ -1,0 +1,4 @@
+# Our method: DynMuon-Route with the per-layer Stable-Rank router.
+extends: gpt124m.yaml
+routing_mode: stable_rank
+run_name: dynmuon_route

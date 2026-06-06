@@ -1,0 +1,4 @@
+# Baseline: standard DynMuon (global logistic time schedule p_t : 1 -> -0.25).
+extends: gpt124m.yaml
+routing_mode: global_schedule
+run_name: dynmuon

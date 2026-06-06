@@ -47,21 +47,35 @@ dynmuon/                 # library package
   data.py                # WikiText-103 memmap batch loading
   trainer.py             # train loop, optimizer wiring, routing logging, noise hook
   config.py              # YAML loading (extends) + device selection
+  analysis.py            # history dumps, steps-to-target, series helpers
 configs/
   base.yaml              # all defaults (every knob lives here)
   gpt124m.yaml           # 124M reference (extends base)
   small.yaml             # fast local / smoke config (extends base)
+  adamw / muon / dynmuon / route .yaml   # the four methods (extend gpt124m)
   exp1_spectral.yaml     # experiment 1 (extends small)
   exp2_noise.yaml        # experiment 2 (extends small)
 train.py                 # thin CLI entry point
 validate_math.py         # pytest: factorization == exact SVD, NS polar factor, ns≈svd
 experiments/
+  baselines_step_efficiency.py # AdamW / Muon / DynMuon / Route step-efficiency
   exp1_spectral_evolution.py   # per-layer p_{t,l} trajectories
   exp2_noise_injection.py      # anisotropic-noise robustness
 scripts/
   prepare_wikitext.py    # WikiText-103 -> GPT-2-BPE train.bin/val.bin
   run_job.sh             # RunAI cluster submission (+ container_entry.sh)
 ```
+
+## Methods (one config each)
+
+| config | method | how |
+|--------|--------|-----|
+| `configs/adamw.yaml` | AdamW | `matrix_optimizer: adamw` (all params to AdamW) |
+| `configs/muon.yaml` | Muon | `routing_mode: fixed`, `fixed_p: 0.0` (constant p=0) |
+| `configs/dynmuon.yaml` | DynMuon | `routing_mode: global_schedule` (logistic p_t) |
+| `configs/route.yaml` | **DynMuon-Route** | `routing_mode: stable_rank` (per-layer router) |
+
+Run any single method: `python train.py --config configs/<method>.yaml [--model small]`.
 
 All customization is done through `configs/*.yaml`; a config `extends:` another and
 overrides selected keys. CLI flags (e.g. `--routing-mode`, `--max-steps`) override
@@ -74,21 +88,33 @@ uv sync
 pytest validate_math.py                          # spectral-math unit tests
 python scripts/prepare_wikitext.py               # tokenize WikiText-103
 python train.py --config configs/small.yaml --max-steps 50    # smoke test
+python experiments/baselines_step_efficiency.py  # 4-method comparison (small model)
 python experiments/exp1_spectral_evolution.py    # spectral-evolution plot (small model)
+python experiments/exp2_noise_injection.py       # noise-robustness plot (small model)
 ```
 
 Cluster (124M):
 
 ```bash
 scripts/run_job.sh sanity
+scripts/run_job.sh baselines --model gpt124m --max-steps 20000
 scripts/run_job.sh exp1 --model gpt124m --max-steps 4000
+scripts/run_job.sh exp2 --model gpt124m
 ```
 
 ## Experiments
 
-- **Exp 1 — spectral evolution:** does Attention reject negative `p` (stays `p ≥ 0`)
-  while MLP routes toward `p = -0.25`? Compares the global schedule vs the
-  Stable-Rank router and plots `p_{t,l}` for `c_attn`, `c_proj`, `mlp.c_fc`, `mlp.c_proj`.
-- **Exp 2 — noise injection:** inject `M += λ·σ₁·z·u₁v₁ᵀ` and check the Stable-Rank
-  router detects the anisotropic spike, drops `p` negative, and stays stable while
-  the global schedule destabilizes.
+Each experiment script trains the relevant runs, writes plots **and** dumps the raw
+metric trajectories to `results/<exp>/history_*.json` for numerical analysis.
+
+- **Baselines (`results/baselines/`)** — AdamW vs Muon (p=0) vs DynMuon vs
+  DynMuon-Route. Reports validation-loss curves and step efficiency (fewer steps to
+  a common target loss); the project target is DynMuon reaching it ~10–26% faster
+  than Muon. Outputs `loss_curves.png` + `summary.md`.
+- **Exp 1 — spectral evolution (`results/exp1_spectral_evolution/`)** — does
+  Attention reject negative `p` (stays `p ≥ 0`) while MLP routes toward `p = -0.25`?
+  Global schedule vs Stable-Rank router; plots `p_{t,l}` for `c_attn`, `c_proj`,
+  `mlp.c_fc`, `mlp.c_proj`.
+- **Exp 2 — noise injection (`results/exp2_noise_injection/`)** — inject
+  `M += λ·σ₁·z·u₁v₁ᵀ` and check the Stable-Rank router detects the anisotropic spike,
+  drops `p` negative, and stays stable while the global schedule destabilizes.

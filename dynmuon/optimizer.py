@@ -39,7 +39,7 @@ from typing import Any
 
 import torch
 
-ROUTING_MODES = ("global_schedule", "stable_rank", "snr", "alignment")
+ROUTING_MODES = ("fixed", "global_schedule", "stable_rank", "snr", "alignment")
 COMPUTE_MODES = ("svd", "ns")
 NS_VARIANTS = ("quintic", "cubic")
 
@@ -139,6 +139,7 @@ class DynMuonRoute(torch.optim.Optimizer):
         p_max: float = 1.0,
         mu: float = 0.0,
         omega: float = 1.0,
+        fixed_p: float = 0.0,
         tau_ratio: float = 0.04,
         width_ratio: float = 0.04,
         total_steps: int | None = None,
@@ -157,13 +158,16 @@ class DynMuonRoute(torch.optim.Optimizer):
             lr=lr, momentum=momentum, nesterov=nesterov, routing_mode=routing_mode,
             compute_mode=compute_mode, ns_variant=ns_variant, ns_steps=ns_steps, eps=eps,
             adjust_lr_fn=adjust_lr_fn, p_min=p_min, p_max=p_max, mu=mu, omega=omega,
-            tau_ratio=tau_ratio, width_ratio=width_ratio, total_steps=total_steps,
+            fixed_p=fixed_p, tau_ratio=tau_ratio, width_ratio=width_ratio,
+            total_steps=total_steps,
         )
         super().__init__(params, defaults)
         self._step_count = 0
 
     def _select_p(self, group: dict, x: float | None) -> float:
-        """Global logistic time schedule, or the routed proxy mapping."""
+        """Fixed exponent, global logistic time schedule, or routed proxy mapping."""
+        if group["routing_mode"] == "fixed":
+            return group["fixed_p"]              # 0.0 = Muon, 1.0 = SGD
         if group["routing_mode"] == "global_schedule":
             q_t = self._step_count / max(1, group["total_steps"])
             u = (q_t - group["tau_ratio"]) / max(group["width_ratio"], 1e-8)
@@ -234,12 +238,15 @@ class DynMuonRoute(torch.optim.Optimizer):
                     else newton_schulz(X_n, group["ns_steps"]))
 
         # -- routing proxies -----------------------------------------------
-        sr = 1.0 / (lam_max + eps)                        # ‖M‖_F²/σ_max² = 1/λ_max(A)
+        d = X_n.shape[0]                                  # min(rows, cols) after orientation
+        sr = 1.0 / (lam_max + eps)                        # ‖M‖_F²/σ_max² = 1/λ_max(A) ∈ [1, d]
         gamma = float((fro_M / (torch.linalg.norm(G2 - M2) + eps)).item())
         alpha = float((torch.sum(W2 * M2).abs() / (torch.linalg.norm(W2) * fro_M + eps)).item())
 
+        # Stable rank is routed in normalized form sr/d ∈ (0, 1] so that one set of
+        # (mu, omega) works at any model width; the raw sr is kept for logging.
         mode = group["routing_mode"]
-        x = sr if mode == "stable_rank" else gamma if mode == "snr" else alpha if mode == "alignment" else None
+        x = (sr / d) if mode == "stable_rank" else gamma if mode == "snr" else alpha if mode == "alignment" else None
         p_exp = self._select_p(group, x)
 
         # -- shape D(p) = U Σ^p Vᵀ -----------------------------------------

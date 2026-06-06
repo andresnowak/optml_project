@@ -20,15 +20,9 @@ import sys
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dynmuon import MemoryLogger, load_config, train  # noqa: E402
+from dynmuon import MemoryLogger, analysis, load_config, train  # noqa: E402
 
 OUT_DIR = os.path.join("results", "exp2_noise_injection")
-
-
-def _scalar(history: dict, key: str):
-    if key not in history:
-        return None
-    return zip(*history[key])  # (steps, values)
 
 
 def main() -> None:
@@ -49,20 +43,18 @@ def main() -> None:
         print(f"\n=== training routing_mode={mode} (lambda={cfg.get('noise_lambda')}) ===")
         train(cfg, logger=logger)
         runs[mode] = logger.history
+        analysis.dump_history(logger.history, os.path.join(OUT_DIR, f"history_{mode}.json"))
 
     fig, (ax_loss, ax_p) = plt.subplots(1, 2, figsize=(12, 4.5))
     for mode, hist in runs.items():
-        loss = _scalar(hist, "train/loss")
-        if loss:
-            steps, vals = list(loss[0]), list(loss[1])
+        if "train/loss" in hist:
+            steps, vals = zip(*hist["train/loss"])
             finite = [v if math.isfinite(v) else float("nan") for v in vals]
             ax_loss.plot(steps, finite, label=mode)
         # mean p across all mlp.c_fc layers as a representative trajectory
-        pkeys = [k for k in hist if k.startswith("route/p/") and k.endswith("mlp.c_fc.weight")]
-        if pkeys:
-            steps = [s for s, _ in hist[pkeys[0]]]
-            avg = [sum(hist[k][i][1] for k in pkeys) / len(pkeys) for i in range(len(steps))]
-            ax_p.plot(steps, avg, label=mode)
+        s = analysis.mean_series_by_suffix(hist, "mlp.c_fc.weight")
+        if s:
+            ax_p.plot(s[0], s[1], label=mode)
 
     ax_loss.set_title("training loss under noise injection")
     ax_loss.set_xlabel("step"); ax_loss.set_ylabel("loss"); ax_loss.legend()

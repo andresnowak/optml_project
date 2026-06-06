@@ -20,23 +20,10 @@ import sys
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dynmuon import MemoryLogger, load_config, train  # noqa: E402
+from dynmuon import MemoryLogger, analysis, load_config, train  # noqa: E402
 
 TARGETS = ["attn.c_attn.weight", "attn.c_proj.weight", "mlp.c_fc.weight", "mlp.c_proj.weight"]
 OUT_DIR = os.path.join("results", "exp1_spectral_evolution")
-
-
-def _series_for(history: dict, suffix: str):
-    """Average p trajectory across all layers whose name ends with ``suffix``."""
-    keys = [k for k in history if k.startswith("route/p/") and k.endswith(suffix)]
-    if not keys:
-        return None
-    steps = [s for s, _ in history[keys[0]]]
-    n = len(keys)
-    avg = []
-    for i in range(len(steps)):
-        avg.append(sum(history[k][i][1] for k in keys) / n)
-    return steps, avg
 
 
 def main() -> None:
@@ -55,11 +42,12 @@ def main() -> None:
         print(f"\n=== training routing_mode={mode} ===")
         train(cfg, logger=logger)
         runs[mode] = logger.history
+        analysis.dump_history(logger.history, os.path.join(OUT_DIR, f"history_{mode}.json"))
 
     fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
     for ax, suffix in zip(axes.flat, TARGETS):
         for mode, hist in runs.items():
-            s = _series_for(hist, suffix)
+            s = analysis.mean_series_by_suffix(hist, suffix)
             if s:
                 ax.plot(s[0], s[1], label=mode)
         ax.axhline(0.0, color="grey", ls=":", lw=0.8)
