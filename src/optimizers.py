@@ -107,6 +107,9 @@ class SpecMuon(torch.optim.Optimizer):
           ``sqrt`` = β=0.5; ``clip`` = η/(σ+sigma_clip);
           ``truncate`` = drop σ < sigma_truncate·σ_max;
           ``energy`` = dynamic k by cumulative spectral energy ≥ ``energy_threshold``.
+      - ``tail_mode``:
+          ``gradient`` = paper Algorithm 1 tail, U diag(S) V^T;
+          ``muon`` = true Muon tail, U V^T.
       - SAV-gating (``gate_window``/``gate_threshold``) bypasses SAV when the
         loss is dropping fast over the rolling window — collapses to the
         tail-only (paper-Muon) update; default ``gate_threshold=0`` disables.
@@ -116,6 +119,7 @@ class SpecMuon(torch.optim.Optimizer):
     """
 
     _VALID_SIGMA_MODES = ("power", "clip", "truncate", "energy")
+    _VALID_TAIL_MODES = ("gradient", "muon")
     # Legacy aliases collapsed into ``power``: η/(σ+ε) ≡ power(β=1); η/(√σ+ε) ≡ power(β=0.5).
     _SIGMA_ALIASES = {"baseline": ("power", 1.0), "sqrt": ("power", 0.5)}
 
@@ -136,12 +140,15 @@ class SpecMuon(torch.optim.Optimizer):
         energy_threshold: float = 0.9,
         gate_window: int = 10,
         gate_threshold: float = 0.0,
+        tail_mode: str = "gradient",
     ):
         if sigma_mode in self._SIGMA_ALIASES:
             sigma_mode, power_beta = self._SIGMA_ALIASES[sigma_mode]
         if sigma_mode not in self._VALID_SIGMA_MODES:
             valid = self._VALID_SIGMA_MODES + tuple(self._SIGMA_ALIASES)
             raise ValueError(f"sigma_mode must be one of {valid}, got {sigma_mode}")
+        if tail_mode not in self._VALID_TAIL_MODES:
+            raise ValueError(f"tail_mode must be one of {self._VALID_TAIL_MODES}, got {tail_mode}")
         if kappa < 0:
             raise ValueError(f"kappa must be >= 0 (paper §2.1), got {kappa}")
         if not 0.0 < energy_threshold <= 1.0:
@@ -155,7 +162,8 @@ class SpecMuon(torch.optim.Optimizer):
                         adjust_lr_fn=adjust_lr_fn, sigma_mode=sigma_mode,
                         sigma_clip=sigma_clip, sigma_truncate=sigma_truncate,
                         power_beta=power_beta, energy_threshold=energy_threshold,
-                        gate_window=gate_window, gate_threshold=gate_threshold)
+                        gate_window=gate_window, gate_threshold=gate_threshold,
+                        tail_mode=tail_mode)
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -190,6 +198,7 @@ class SpecMuon(torch.optim.Optimizer):
             energy_threshold: float = group["energy_threshold"]
             gate_window: int = group["gate_window"]
             gate_threshold: float = group["gate_threshold"]
+            tail_mode: str = group["tail_mode"]
 
             # Paper §2.1: E(Θ) := f(Θ) + κ ; Algorithm 1 writes √L_t for √E_t.
             energy = float(loss.item()) + kappa
@@ -280,8 +289,8 @@ class SpecMuon(torch.optim.Optimizer):
                     k_step = k_act
 
                 # Gate override: when SAV is inactive, collapse to tail-only
-                # (k_step=0 ⇒ SAV branch skipped, tail covers all directions —
-                # the §4.2 top_k=0 winning condition).
+                # (k_step=0 ⇒ SAV branch skipped, tail covers all directions
+                # using the selected tail mode).
                 if not sav_active:
                     k_step = 0
 
@@ -328,11 +337,17 @@ class SpecMuon(torch.optim.Optimizer):
                     # paper line 18: r_{t,j} ← clamp(χ,0,1)·r^new + (1-clamp(χ,0,1))·√L
                     r[:k_step] = chi * r_new + (1.0 - chi) * sqrt_loss
 
-                # paper line 22: O_t ← O_t + U_{k:} diag(S_{k:}) V^T_{k:}
-                # The paper keeps the singular values for the tail directions
-                # (NOT the orthogonalized U V^T form that plain Muon uses).
+                # paper line 22: O_t ← O_t + U_{k:} diag(S_{k:}) V^T_{k:}.
+                # ``tail_mode="muon"`` tests the true orthogonalized Muon tail
+                # U_{k:} V^T_{k:}, which the paper labels as Muon but does not
+                # write in Algorithm 1.
                 if k_step < S.shape[0]:
-                    O.addmm_(U[:, k_step:] * S[k_step:].unsqueeze(0), Vh[k_step:, :])
+                    if tail_mode == "gradient":
+                        O.addmm_(U[:, k_step:] * S[k_step:].unsqueeze(0), Vh[k_step:, :])
+                    elif tail_mode == "muon":
+                        O.addmm_(U[:, k_step:], Vh[k_step:, :])
+                    else:
+                        raise RuntimeError(f"unvalidated tail_mode: {tail_mode}")
 
                 # paper lines 24-25 (with optional shape_scaling extension —
                 # uses the same Keller/Jordan rule as the Muon subclass above).
@@ -365,7 +380,7 @@ OPTIMIZER_KWARGS: dict[str, frozenset[str]] = {
     "specmuon": frozenset({"momentum", "top_k", "sav_smooth", "eps", "kappa",
                            "adjust_lr_fn", "sigma_mode", "sigma_clip", "sigma_truncate",
                            "power_beta", "energy_threshold",
-                           "gate_window", "gate_threshold"}),
+                           "gate_window", "gate_threshold", "tail_mode"}),
 }
 
 # Optimizers that don't accept the standard ``weight_decay`` argument.

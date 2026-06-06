@@ -43,6 +43,8 @@ SWEEP_SPECS = {
     "energy_threshold": {"type": float, "optimizers": _optimizers_accepting("energy_threshold")},
     "gate_window": {"type": int, "optimizers": _optimizers_accepting("gate_window")},
     "gate_threshold": {"type": float, "optimizers": _optimizers_accepting("gate_threshold")},
+    "tail_mode": {"type": str, "choices": {"gradient", "muon"},
+                  "optimizers": _optimizers_accepting("tail_mode")},
 }
 
 
@@ -61,6 +63,7 @@ _FLAG_TO_KWARG: dict[str, str] = {
     "--energy-threshold": "energy_threshold",
     "--gate-window": "gate_window",
     "--gate-threshold": "gate_threshold",
+    "--tail-mode": "tail_mode",
     "--ns-steps": "ns_steps",
     "--momentum": "momentum",
     "--beta1": "betas",
@@ -266,6 +269,9 @@ def _build_parser() -> argparse.ArgumentParser:
                           "the SAV branch. 'all' (default) = paper. 'mlp' = SAV on MLP weights "
                           "only, attention through paper-tail (SpecMuon top_k=0). 'attention' "
                           "= the symmetric variant.")
+    opt.add_argument("--tail-mode", choices=("gradient", "muon"), default=None,
+                     help="SpecMuon tail update after SAV top-k: "
+                          "`gradient` keeps paper U diag(S) V^T tail; `muon` uses U V^T.")
 
     log_group = parser.add_argument_group("logging")
     log_group.add_argument("--backend", choices=("matplotlib", "wandb"), default=None,
@@ -386,7 +392,8 @@ def main() -> None:
     _OPT_KWARG_FIELDS = (
         "momentum", "ns_steps", "top_k", "sav_smooth", "kappa",
         "adjust_lr_fn", "sigma_mode", "sigma_clip", "sigma_truncate",
-        "power_beta", "energy_threshold", "gate_window", "gate_threshold", "eps",
+        "power_beta", "energy_threshold", "gate_window", "gate_threshold",
+        "tail_mode", "eps",
     )
 
     def build_run_settings(overrides: dict[str, object]) -> tuple[float, float, dict]:

@@ -121,8 +121,9 @@ class WandbLogger(BaseLogger):
             if isinstance(value, torch.Tensor):
                 svs = value.detach().float().cpu().numpy().reshape(-1)
                 n_svs = len(svs) if self.svd_top_k is None else min(self.svd_top_k, len(svs))
+                element_name = "r" if name.startswith("sav_r/") else "sigma"
                 for i in range(n_svs):
-                    payload[f"{name}/sigma_{i + 1}"] = float(svs[i])
+                    payload[f"{name}/{element_name}_{i + 1}"] = float(svs[i])
                 finite_svs = svs[np.isfinite(svs)]
                 if finite_svs.size:
                     data_range = float(finite_svs.max() - finite_svs.min())
