@@ -390,6 +390,9 @@ OPTIMIZER_KWARGS: dict[str, frozenset[str]] = {
 }
 
 # Optimizers that don't accept the standard ``weight_decay`` argument.
+# Torch Muon supports weight decay, but these comparisons keep Muon-family
+# matrix updates at zero weight decay; AdamW fallback params still use the
+# configured value.
 _NO_WEIGHT_DECAY = frozenset({"muon", "specmuon"})
 
 
