@@ -20,7 +20,7 @@ import sys
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dynmuon import MemoryLogger, analysis, load_config, train  # noqa: E402
+from dynmuon import analysis, build_arm_logger, load_config, train  # noqa: E402
 
 TARGETS = ["attn.c_attn.weight", "attn.c_proj.weight", "mlp.c_fc.weight", "mlp.c_proj.weight"]
 OUT_DIR = os.path.join("results", "exp1_spectral_evolution")
@@ -31,18 +31,22 @@ def main() -> None:
     ap.add_argument("--config", default="configs/exp1_spectral.yaml")
     ap.add_argument("--model", choices=["small", "gpt124m"])
     ap.add_argument("--max-steps", dest="max_steps", type=int)
+    ap.add_argument("--wandb", action="store_true")
+    ap.add_argument("--wandb-group", dest="wandb_group", default="exp1_spectral")
     args = ap.parse_args()
     os.makedirs(OUT_DIR, exist_ok=True)
 
     runs = {}
     for mode in ("global_schedule", "stable_rank"):
         cfg = load_config(args.config, {"model": args.model, "max_steps": args.max_steps,
-                                        "routing_mode": mode, "wandb": False})
-        logger = MemoryLogger()
+                                        "routing_mode": mode})
         print(f"\n=== training routing_mode={mode} ===")
+        logger, mem, wb = build_arm_logger(cfg, args.wandb, f"exp1_{mode}", args.wandb_group)
         train(cfg, logger=logger)
-        runs[mode] = logger.history
-        analysis.dump_history(logger.history, os.path.join(OUT_DIR, f"history_{mode}.json"))
+        if wb:
+            wb.finish()
+        runs[mode] = mem.history
+        analysis.dump_history(mem.history, os.path.join(OUT_DIR, f"history_{mode}.json"))
 
     fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
     for ax, suffix in zip(axes.flat, TARGETS):

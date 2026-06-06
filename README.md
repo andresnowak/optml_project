@@ -105,7 +105,9 @@ scripts/run_job.sh exp2 --model gpt124m
 ## Experiments
 
 Each experiment script trains the relevant runs, writes plots **and** dumps the raw
-metric trajectories to `results/<exp>/history_*.json` for numerical analysis.
+metric trajectories to `results/<exp>/history_*.json` for numerical analysis. Pass
+`--wandb` to additionally log every arm as its own W&B run inside a shared group
+(`--wandb-group`), so the arms overlay in the W&B UI.
 
 - **Baselines (`results/baselines/`)** — AdamW vs Muon (p=0) vs DynMuon vs
   DynMuon-Route. Reports validation-loss curves and step efficiency (fewer steps to

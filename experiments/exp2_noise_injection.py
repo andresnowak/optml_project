@@ -20,7 +20,7 @@ import sys
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dynmuon import MemoryLogger, analysis, load_config, train  # noqa: E402
+from dynmuon import analysis, build_arm_logger, load_config, train  # noqa: E402
 
 OUT_DIR = os.path.join("results", "exp2_noise_injection")
 
@@ -31,19 +31,22 @@ def main() -> None:
     ap.add_argument("--model", choices=["small", "gpt124m"])
     ap.add_argument("--max-steps", dest="max_steps", type=int)
     ap.add_argument("--noise-lambda", dest="noise_lambda", type=float)
+    ap.add_argument("--wandb", action="store_true")
+    ap.add_argument("--wandb-group", dest="wandb_group", default="exp2_noise")
     args = ap.parse_args()
     os.makedirs(OUT_DIR, exist_ok=True)
 
     runs = {}
     for mode in ("global_schedule", "stable_rank"):
         cfg = load_config(args.config, {"model": args.model, "max_steps": args.max_steps,
-                                        "routing_mode": mode, "noise_lambda": args.noise_lambda,
-                                        "wandb": False})
-        logger = MemoryLogger()
+                                        "routing_mode": mode, "noise_lambda": args.noise_lambda})
         print(f"\n=== training routing_mode={mode} (lambda={cfg.get('noise_lambda')}) ===")
+        logger, mem, wb = build_arm_logger(cfg, args.wandb, f"exp2_{mode}", args.wandb_group)
         train(cfg, logger=logger)
-        runs[mode] = logger.history
-        analysis.dump_history(logger.history, os.path.join(OUT_DIR, f"history_{mode}.json"))
+        if wb:
+            wb.finish()
+        runs[mode] = mem.history
+        analysis.dump_history(mem.history, os.path.join(OUT_DIR, f"history_{mode}.json"))
 
     fig, (ax_loss, ax_p) = plt.subplots(1, 2, figsize=(12, 4.5))
     for mode, hist in runs.items():

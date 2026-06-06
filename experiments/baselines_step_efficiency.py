@@ -22,7 +22,7 @@ import sys
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dynmuon import MemoryLogger, analysis, load_config, train  # noqa: E402
+from dynmuon import analysis, build_arm_logger, load_config, train  # noqa: E402
 
 METHODS = [
     ("adamw", "configs/adamw.yaml"),
@@ -42,19 +42,23 @@ def main() -> None:
     ap.add_argument("--seed", type=int)
     ap.add_argument("--target-loss", dest="target_loss", type=float,
                     help="common val-loss target; default = the loss every method reaches")
+    ap.add_argument("--wandb", action="store_true")
+    ap.add_argument("--wandb-group", dest="wandb_group", default="baselines")
     args = ap.parse_args()
     os.makedirs(OUT_DIR, exist_ok=True)
     common = {"model": args.model, "max_steps": args.max_steps,
-              "eval_every": args.eval_every, "seed": args.seed, "wandb": False}
+              "eval_every": args.eval_every, "seed": args.seed}
 
     runs: dict[str, dict] = {}
     for name, cfg_path in METHODS:
         cfg = load_config(cfg_path, common)
         print(f"\n=== {name} ===")
-        logger = MemoryLogger()
+        logger, mem, wb = build_arm_logger(cfg, args.wandb, name, args.wandb_group)
         train(cfg, logger=logger)
-        runs[name] = logger.history
-        analysis.dump_history(logger.history, os.path.join(OUT_DIR, f"history_{name}.json"))
+        if wb:
+            wb.finish()
+        runs[name] = mem.history
+        analysis.dump_history(mem.history, os.path.join(OUT_DIR, f"history_{name}.json"))
 
     # Common target: either user-given, or the worst of the per-method best val
     # losses (so every method is able to reach it).

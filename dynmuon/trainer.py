@@ -34,14 +34,48 @@ class MemoryLogger:
 
 
 class WandbLogger:
+    """One W&B run. ``reinit=True`` so several runs can be created sequentially
+    in one process (the experiment scripts train multiple arms per job)."""
+
     def __init__(self, cfg: dict) -> None:
         import wandb
         self._wandb = wandb
-        wandb.init(project=cfg.get("wandb_project", "dynmuon-route"),
-                   name=cfg.get("run_name"), config=cfg)
+        self._run = wandb.init(
+            project=cfg.get("wandb_project", "dynmuon-route"),
+            entity=cfg.get("wandb_entity"),
+            name=cfg.get("run_name"),
+            group=cfg.get("wandb_group"),
+            config=cfg,
+            reinit=True,
+        )
 
     def log(self, payload: dict, step: int) -> None:
         self._wandb.log(payload, step=step)
+
+    def finish(self) -> None:
+        self._run.finish()
+
+
+class TeeLogger:
+    """Fan a single log() out to several loggers (e.g. MemoryLogger + W&B)."""
+
+    def __init__(self, loggers: list) -> None:
+        self.loggers = loggers
+
+    def log(self, payload: dict, step: int) -> None:
+        for logger in self.loggers:
+            logger.log(payload, step=step)
+
+
+def build_arm_logger(cfg: dict, use_wandb: bool, run_name: str, group: str):
+    """Logger for one experiment arm. Returns (logger_for_train, memory_logger,
+    wandb_logger_or_None). When ``use_wandb`` the run logs to both an in-memory
+    history (for the comparison plots) and its own W&B run inside ``group``."""
+    mem = MemoryLogger()
+    if not use_wandb:
+        return mem, mem, None
+    wb = WandbLogger({**cfg, "run_name": run_name, "wandb_group": group})
+    return TeeLogger([mem, wb]), mem, wb
 
 
 # -- param grouping --------------------------------------------------------
