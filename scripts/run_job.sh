@@ -34,10 +34,18 @@ set -euo pipefail
 
 ENV_FILE="${ENV_FILE:-.env}"
 if [ -f "${ENV_FILE}" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    . "${ENV_FILE}"
-    set +a
+    while IFS='=' read -r key value; do
+        case "${key}" in
+            ''|\#*) continue ;;
+        esac
+        key="${key%%[[:space:]]*}"
+        value="${value%%[[:space:]]#*}"
+        value="${value%"${value##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        if [ -n "${key}" ] && [ -z "${!key+x}" ]; then
+            export "${key}=${value}"
+        fi
+    done < "${ENV_FILE}"
 fi
 
 USERNAME=$(whoami)
@@ -102,10 +110,11 @@ JOB_STAMP="${JOB_STAMP:-$(date +%Y%m%d-%H%M%S)}"
 # Used by subcommands to decide whether to apply their own defaults vs.
 # defer to the user's override. `${X+set}` expands to "set" iff X is set
 # (even to empty), so we lock the answer BEFORE the defaults block below.
-for _v in CONFIG EXPERIMENT OPTIMIZER STEPS LR SEED LOG_EVERY \
+for _v in CONFIG EXPERIMENT OPTIMIZER STEPS LR MIN_LR SEED LOG_EVERY \
+          SCHEDULER \
           TOP_K SIGMA_MODE GATE_THRESHOLD GATE_WINDOW KAPPA \
           TAIL_MODE \
-          BACKEND LOG_SAV_R WANDB_PROJECT CHECKPOINT_DIR CHECKPOINT_EVERY \
+          BACKEND LOG_SAV_R WANDB_PROJECT WANDB_ENTITY CHECKPOINT_DIR CHECKPOINT_EVERY \
           SPECMUON_TARGET COMPARE_OPTIMIZERS CONDITION_NUMBER \
           RUN_TAG LR_MIN LR_MAX LR_N; do
     eval "_USER_${_v}=\"\${${_v}+set}\""
@@ -118,6 +127,8 @@ EXPERIMENT="${EXPERIMENT:-shakespeare}"        # linear_regression | matrix_fact
 OPTIMIZER="${OPTIMIZER:-specmuon}"             # adam | adamw | sgd | muon | specmuon
 STEPS="${STEPS:-2000}"
 LR="${LR:-3e-4}"
+MIN_LR="${MIN_LR:-}"
+SCHEDULER="${SCHEDULER:-}"
 SEED="${SEED:-0}"
 LOG_EVERY="${LOG_EVERY:-50}"
 
@@ -164,6 +175,12 @@ _append_if_set() {
     if [ -n "${value}" ]; then MAIN_ARGS+=("${flag}" "${value}"); fi
 }
 
+_append_if_user_set() {
+    local env_name="$1" flag="$2" value="$3" user_set
+    eval "user_set=\"\${_USER_${env_name}:-}\""
+    if [ -n "${user_set}" ] && [ -n "${value}" ]; then MAIN_ARGS+=("${flag}" "${value}"); fi
+}
+
 # Build the common arg list for `main.py` as a bash ARRAY (MAIN_ARGS).
 # Arrays preserve token boundaries through `"$@"` — string concatenation
 # would re-collapse into a single token under RunAI's argv flattening.
@@ -171,13 +188,25 @@ _build_main_args() {
     MAIN_ARGS=()
     if [ -n "${CONFIG}" ]; then
         MAIN_ARGS+=(--config "${CONFIG}")
+        _append_if_user_set "OPTIMIZER" "--optimizer" "${OPTIMIZER}"
+        _append_if_user_set "LR" "--lr" "${LR}"
+        _append_if_user_set "MIN_LR" "--min-lr" "${MIN_LR}"
+        _append_if_user_set "SCHEDULER" "--scheduler" "${SCHEDULER}"
+        _append_if_user_set "STEPS" "--steps" "${STEPS}"
+        _append_if_user_set "SEED" "--seed" "${SEED}"
+        _append_if_user_set "LOG_EVERY" "--log-every" "${LOG_EVERY}"
+        _append_if_user_set "BACKEND" "--backend" "${BACKEND}"
+        _append_if_user_set "WANDB_PROJECT" "--wandb-project" "${WANDB_PROJECT}"
+        _append_if_user_set "WANDB_ENTITY" "--wandb-entity" "${WANDB_ENTITY}"
     else
         MAIN_ARGS+=(--experiment "${EXPERIMENT}")
+        MAIN_ARGS+=(--optimizer "${OPTIMIZER}" --lr "${LR}" --steps "${STEPS}"
+                    --seed "${SEED}" --log-every "${LOG_EVERY}"
+                    --backend "${BACKEND}"
+                    --wandb-project "${WANDB_PROJECT}" --wandb-entity "${WANDB_ENTITY}")
+        _append_if_set "--min-lr" "${MIN_LR}"
+        _append_if_set "--scheduler" "${SCHEDULER}"
     fi
-    MAIN_ARGS+=(--optimizer "${OPTIMIZER}" --lr "${LR}" --steps "${STEPS}"
-                --seed "${SEED}" --log-every "${LOG_EVERY}"
-                --backend "${BACKEND}"
-                --wandb-project "${WANDB_PROJECT}" --wandb-entity "${WANDB_ENTITY}")
     _append_if_set "--top-k" "${TOP_K}"
     _append_if_set "--sigma-mode" "${SIGMA_MODE}"
     _append_if_set "--tail-mode" "${TAIL_MODE}"
@@ -227,7 +256,10 @@ case "${1:-}" in
         # container, paths, and WandB credentials before a real job.
         STEPS=50
         LOG_EVERY=25
-        BACKEND="${BACKEND:-null}"   # silent by default; pass BACKEND=wandb to confirm logging
+        [ -z "${_USER_BACKEND}" ] && BACKEND=null   # pass BACKEND=wandb to confirm logging
+        _USER_STEPS=set
+        _USER_LOG_EVERY=set
+        _USER_BACKEND=set
         _build_main_args
         job_name="sanity-${SAFE_EXPERIMENT}-${SAFE_OPTIMIZER}${TAG_SUFFIX}-${JOB_STAMP}"
         _submit "${job_name}" "${MAIN_PY}" "${MAIN_ARGS[@]}"
@@ -290,6 +322,15 @@ case "${1:-}" in
         LOG_SAV_R=1
         BACKEND=wandb
         [ -z "${_USER_CHECKPOINT_EVERY}" ] && CHECKPOINT_EVERY=2000
+        _USER_CONFIG=set
+        _USER_OPTIMIZER=set
+        _USER_TOP_K=set
+        _USER_LR=set
+        _USER_STEPS=set
+        _USER_LOG_EVERY=set
+        _USER_LOG_SAV_R=set
+        _USER_BACKEND=set
+        _USER_CHECKPOINT_EVERY=set
         # Fire MLP-only first, then attention-only — share JOB_STAMP so they
         # sort together in `runai list`. The original SPECMUON_TARGET env
         # var (if any) is ignored; both targets are fixed by this subcommand.
@@ -319,6 +360,16 @@ case "${1:-}" in
         BACKEND=wandb
         [ -z "${_USER_CHECKPOINT_DIR}"   ] && CHECKPOINT_DIR="${HOME}/optml_checkpoints/shakespeare_long"
         [ -z "${_USER_CHECKPOINT_EVERY}" ] && CHECKPOINT_EVERY=2000
+        _USER_CONFIG=set
+        _USER_OPTIMIZER=set
+        _USER_TOP_K=set
+        _USER_LR=set
+        _USER_STEPS=set
+        _USER_LOG_EVERY=set
+        _USER_LOG_SAV_R=set
+        _USER_BACKEND=set
+        _USER_CHECKPOINT_DIR=set
+        _USER_CHECKPOINT_EVERY=set
         _build_main_args
         job_name="shakelong-top${TOP_K}${TAG_SUFFIX}-${JOB_STAMP}"
         _submit "${job_name}" "${MAIN_PY}" "${MAIN_ARGS[@]}"

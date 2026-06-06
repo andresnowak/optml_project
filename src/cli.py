@@ -23,7 +23,9 @@ def _optimizers_accepting(kwarg: str) -> set[str]:
 
 SWEEP_SPECS = {
     "lr": {"type": float},
+    "min_lr": {"type": float},
     "weight_decay": {"type": float},
+    "scheduler": {"type": str, "choices": {"none", "linear", "cosine"}},
     "momentum": {"type": float, "optimizers": _optimizers_accepting("momentum")},
     "beta1": {"type": float, "optimizers": _optimizers_accepting("betas")},
     "beta2": {"type": float, "optimizers": _optimizers_accepting("betas")},
@@ -258,6 +260,13 @@ def _build_parser() -> argparse.ArgumentParser:
     opt.add_argument("--optimizer", choices=sorted(OPTIMIZERS), default="adamw")
     opt.add_argument("--lr", type=float, default=1e-2)
     opt.add_argument("--weight-decay", type=float, default=0.0)
+    opt.add_argument("--scheduler", choices=("none", "linear", "cosine"), default="linear",
+                     help="LR scheduler stepped once per train step. "
+                          "`linear` decays lr to min_lr by the final step; "
+                          "`cosine` uses CosineAnnealingLR with eta_min=min_lr; "
+                          "`none` keeps lr constant.")
+    opt.add_argument("--min-lr", type=float, default=0.0,
+                     help="Minimum LR for linear/cosine schedulers.")
     opt.add_argument("--momentum", type=float, default=None, help="SGD / Muon / Specmuon.")
     opt.add_argument("--beta1", type=float, default=None, help="Adam / AdamW.")
     opt.add_argument("--beta2", type=float, default=None, help="Adam / AdamW.")
@@ -391,6 +400,8 @@ def main() -> None:
         parser.error("--smooth must be at least 1.")
     if args.steps < 1:
         parser.error("--steps must be at least 1.")
+    if args.min_lr < 0:
+        parser.error("--min-lr must be non-negative.")
 
     sweep_params: dict[str, list[object]] = {}
     try:
@@ -432,9 +443,12 @@ def main() -> None:
         "tail_mode", "momentum_mode", "eps",
     )
 
-    def build_run_settings(overrides: dict[str, object]) -> tuple[float, float, dict]:
+    def build_run_settings(overrides: dict[str, object]) -> tuple[float, float, float, dict]:
         assert_optimizer_supports_params(args.optimizer, set(overrides))
         lr = float(overrides.get("lr", args.lr))
+        min_lr = float(overrides.get("min_lr", args.min_lr))
+        if min_lr > lr:
+            raise ValueError(f"min_lr ({min_lr}) must be <= lr ({lr})")
         weight_decay = float(overrides.get("weight_decay", args.weight_decay))
         beta1 = float(overrides.get("beta1", args.beta1 if args.beta1 is not None else 0.9))
         beta2 = float(overrides.get("beta2", args.beta2 if args.beta2 is not None else 0.999))
@@ -446,11 +460,12 @@ def main() -> None:
                 opt_kwargs[key] = val
         if args.beta1 is not None or args.beta2 is not None or "beta1" in overrides or "beta2" in overrides:
             opt_kwargs["betas"] = (beta1, beta2)
-        return lr, weight_decay, opt_kwargs
+        return lr, min_lr, weight_decay, opt_kwargs
 
     def build_run_config(
         optimizer_name: str,
         lr: float,
+        min_lr: float,
         weight_decay: float,
         opt_kwargs: dict,
         overrides: dict[str, object],
@@ -462,7 +477,9 @@ def main() -> None:
             "experiment": args.experiment,
             "optimizer": optimizer_name,
             "lr": lr,
+            "min_lr": min_lr,
             "weight_decay": weight_decay,
+            "scheduler": args.scheduler,
             "steps": args.steps,
             "batch_size": args.batch_size,
             "experiment_kwargs": dict(experiment_kwargs),
@@ -481,7 +498,8 @@ def main() -> None:
         override_keys = set(overrides.keys())
         assert_optimizer_supports_params(optimizer_name, override_keys)
         reset_seeds()
-        lr, weight_decay, opt_kwargs = build_run_settings(overrides)
+        lr, min_lr, weight_decay, opt_kwargs = build_run_settings(overrides)
+        scheduler = str(overrides.get("scheduler", args.scheduler))
         # Route experiment-level overrides (e.g. --sweep condition_number=...)
         # through experiment_kwargs; without this, sweep values are silently
         # dropped because build_run_settings only knows about optimizer kwargs.
@@ -493,9 +511,11 @@ def main() -> None:
                 specmuon_target=args.specmuon_target,
                 run_tag=args.run_tag,
             )
-            run_config = build_run_config(optimizer_name, lr, weight_decay, opt_kwargs, overrides)
+            run_config = build_run_config(optimizer_name, lr, min_lr, weight_decay, opt_kwargs, overrides)
             run_config.update({
                 "experiment_kwargs": dict(merged_exp_kwargs),
+                "scheduler": scheduler,
+                "min_lr": min_lr,
                 "specmuon_target": args.specmuon_target,
                 "run_tag": args.run_tag,
                 **merged_exp_kwargs,
@@ -508,9 +528,11 @@ def main() -> None:
             device=device,
             steps=args.steps,
             lr=lr,
+            min_lr=min_lr,
             weight_decay=weight_decay,
             batch_size=args.batch_size,
             log_every=args.log_every,
+            scheduler=scheduler,
             experiment_kwargs=merged_exp_kwargs,
             opt_kwargs=opt_kwargs,
             log_grad_svd=args.log_grad_svd,

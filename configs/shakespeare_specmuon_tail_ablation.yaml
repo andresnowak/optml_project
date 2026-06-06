@@ -5,7 +5,8 @@ extends: shakespeare.yaml
 #   --sweep top_k=0,6,32 --sweep tail_mode=gradient,muon
 
 optimizer: specmuon
-lr: 3.0e-4
+lr: 1.0e-4
+min_lr: 1.0e-5
 weight_decay: 0.0
 batch_size: 128
 steps: 3000
@@ -13,6 +14,7 @@ log_every: 20
 
 adjust_lr_fn: shape_scaling
 momentum_mode: post_spectral
+scheduler: cosine
 backend: wandb
 wandb_project: mlo-specmuon-shakespeare
 log_sav_r: true

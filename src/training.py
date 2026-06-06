@@ -46,6 +46,8 @@ class TrainConfig:
     checkpoint_dir: str | None = None
     checkpoint_every: int | None = None  # None = end-of-training only
     specmuon_target: str = "all"          # "all" | "mlp" | "attention"
+    scheduler: str = "linear"             # "none" | "linear" | "cosine"
+    min_lr: float = 0.0
 
     def with_(self, **changes: Any) -> "TrainConfig":
         return replace(self, **changes)
@@ -128,6 +130,36 @@ def _split_params(
     return matrix_params, other_params
 
 
+def _build_lr_scheduler(
+    optimizer: torch.optim.Optimizer | None,
+    scheduler: str,
+    steps: int,
+    min_lr: float,
+) -> torch.optim.lr_scheduler.LRScheduler | None:
+    if optimizer is None or scheduler == "none":
+        return None
+    schedule_iters = max(1, steps - 1)
+    base_lr = optimizer.param_groups[0]["lr"]
+    if min_lr < 0:
+        raise ValueError(f"min_lr must be non-negative, got {min_lr}")
+    if min_lr > base_lr:
+        raise ValueError(f"min_lr ({min_lr}) must be <= lr ({base_lr})")
+    if scheduler == "linear":
+        return torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1.0,
+            end_factor=min_lr / base_lr if base_lr > 0 else 0.0,
+            total_iters=schedule_iters,
+        )
+    if scheduler == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=schedule_iters,
+            eta_min=min_lr,
+        )
+    raise ValueError(f"unsupported scheduler {scheduler!r}")
+
+
 def train(
     config: TrainConfig,
     *,
@@ -185,12 +217,23 @@ def train(
         )
         adam_optimizer = None
 
+    lr_schedulers = [
+        scheduler
+        for scheduler in (
+            _build_lr_scheduler(optimizer, config.scheduler, config.steps, config.min_lr),
+            _build_lr_scheduler(aux_specmuon, config.scheduler, config.steps, config.min_lr),
+            _build_lr_scheduler(adam_optimizer, config.scheduler, config.steps, config.min_lr),
+        )
+        if scheduler is not None
+    ]
+
     prefix = f"{run_name}/" if run_name else ""
     svd_every = config.svd_every or config.log_every
 
     print(
         f"experiment={config.experiment_name} optimizer={config.optimizer_name} "
-        f"device={config.device.type} steps={config.steps}"
+        f"device={config.device.type} steps={config.steps} "
+        f"scheduler={config.scheduler} min_lr={config.min_lr:.2e}"
     )
 
     ckpt_dir: Path | None = None
@@ -214,6 +257,8 @@ def train(
                 "optimizer": config.optimizer_name,
                 "lr": config.lr,
                 "steps": config.steps,
+                "scheduler": config.scheduler,
+                "min_lr": config.min_lr,
                 "opt_kwargs": dict(config.opt_kwargs),
             },
         }
@@ -221,12 +266,15 @@ def train(
             payload["adam_optimizer"] = adam_optimizer.state_dict()
         if aux_specmuon is not None:
             payload["aux_specmuon"] = aux_specmuon.state_dict()
+        if lr_schedulers:
+            payload["lr_schedulers"] = [scheduler.state_dict() for scheduler in lr_schedulers]
         torch.save(payload, path)
         print(f"  saved {path.name}")
 
     losses: list[float] = []
     for step in range(1, config.steps + 1):
         step_t0 = time.perf_counter()
+        current_lr = optimizer.param_groups[0]["lr"]
         optimizer.zero_grad(set_to_none=True)
         if aux_specmuon is not None:
             aux_specmuon.zero_grad(set_to_none=True)
@@ -252,6 +300,8 @@ def train(
             aux_specmuon.step(loss=loss)
         if adam_optimizer is not None:
             adam_optimizer.step()
+        for scheduler in lr_schedulers:
+            scheduler.step()
 
         if (log_sink is not None and config.log_sav_r and isinstance(optimizer, SpecMuon)
                 and (step == 1 or step % svd_every == 0 or step == config.steps)):
@@ -279,7 +329,6 @@ def train(
         losses.append(loss.item())
 
         if step == 1 or step % config.log_every == 0 or step == config.steps:
-            current_lr = optimizer.param_groups[0]["lr"]
             extra = experiment.metric(model)
             extra_str = " " + " ".join(f"{k}={v:.4f}" for k, v in extra.items()) if extra else ""
             print(f"step={step:04d} loss={loss.item():.6f} lr={current_lr:.2e} time(s)={step_dt:.2f}{extra_str}")
