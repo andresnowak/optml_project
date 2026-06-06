@@ -29,6 +29,10 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${HOME}/.cache}" # NOTE: It will use yo
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-${XDG_CACHE_HOME}/torchinductor}"
 mkdir -p "${XDG_CACHE_HOME}" "${TORCHINDUCTOR_CACHE_DIR}"
 
+# cd into the project so any relative paths the user passes via CLI args
+# (e.g. `--config configs/shakespeare.yaml`) resolve from the project root.
+# The default container cwd is /workspace which is non-writable and doesn't
+# contain the repo.
 cd "${PROJECT_DIR}"
 
 if ! command -v uv >/dev/null 2>&1; then
