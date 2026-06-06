@@ -23,6 +23,9 @@ CMD="${1:-}"; shift || true
 EXTRA=("$@")
 
 case "$CMD" in
+  prep)
+    PY=(python scripts/prepare_wikitext.py)
+    ;;
   sanity)
     PY=(python train.py --config configs/small.yaml --max-steps 50)
     ;;
@@ -39,7 +42,7 @@ case "$CMD" in
     PY=(python experiments/baselines_step_efficiency.py "${EXTRA[@]}")
     ;;
   *)
-    echo "usage: $0 {sanity|single|exp1|exp2|baselines} [extra args]" >&2
+    echo "usage: $0 {prep|sanity|single|exp1|exp2|baselines} [extra args]" >&2
     exit 1
     ;;
 esac
