@@ -184,20 +184,52 @@ class SpecMuon(torch.optim.Optimizer):
                         tail_mode=tail_mode, momentum_mode=momentum_mode)
         super().__init__(params, defaults)
 
-        # Compile the SVD-heavy step on CUDA. Keep MPS eager so metalcore can
-        # route unsupported linalg.svd calls through its CPU fallback.
-        device_type = None
-        for group in self.param_groups:
-            for p in group["params"]:
-                device_type = p.device.type
-                break
-            if device_type is not None:
-                break
-        if device_type == "cuda":
-            self.step = torch.compile(self.step)  # type: ignore[method-assign]
+    @staticmethod
+    @torch.compile
+    def _sav_branch_update(
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+        s_k: torch.Tensor,
+        r_slice: torch.Tensor,
+        sqrt_loss: float,
+        lr: float,
+        xi: float,
+        eps: float,
+        sigma_clip: float,
+        power_beta: float,
+        use_clip: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if use_clip:
+            eta_prime = lr / (s_k + sigma_clip)
+        else:
+            eta_prime = lr / (s_k.pow(power_beta) + eps)
+
+        d_g_norm = s_k / (sqrt_loss + eps)
+        r_new = r_slice / (1.0 + 0.5 * eta_prime * d_g_norm)
+        sav_scale = r_new / (sqrt_loss + eps)
+        O_top = (U_k * sav_scale.unsqueeze(0)) @ Vh_k
+
+        T = (
+            (1.0 - xi) * r_new ** 2
+            + xi * r_slice ** 2
+            + (1.0 - xi) * (r_new - r_slice) ** 2
+        ).clamp(min=0.0)
+        sqrt_T = T.sqrt()
+        denom = sqrt_loss - r_new + eps
+        chi = ((sqrt_loss - sqrt_T) / denom).clamp(0.0, 1.0)
+        r_next = chi * r_new + (1.0 - chi) * sqrt_loss
+
+        dev = (sav_scale - s_k).abs()
+        iota = dev.mean()
+        iota_w = (s_k * dev).sum() / (s_k.sum() + eps)
+        return O_top, r_next, sav_scale, iota, iota_w
 
     @torch.no_grad()
     def step(self, closure=None, loss: torch.Tensor | None = None):  # type: ignore[override]
+        return self._step_impl(closure=closure, loss=loss)
+
+    @torch.no_grad()
+    def _step_impl(self, closure=None, loss: torch.Tensor | None = None):
         """Perform one optimisation step (Algorithm 1 of arXiv:2602.16167).
 
         Pass ``closure`` (re-executed under enable_grad) or ``loss`` directly.
@@ -343,19 +375,12 @@ class SpecMuon(torch.optim.Optimizer):
                 state["last_sigma_min"] = float(S.min().item()) if S.numel() else 0.0
                 state["last_sigma_max"] = float(S.max().item()) if S.numel() else 0.0
 
-                # paper line 11: η'_j ← η/(σ_j^β + ϵ).  β=1 (default) is the
-                # paper's baseline; β=0.5 ≡ legacy "sqrt"; β=0 decouples the
-                # step from σ. ``clip`` is the only mode that does NOT use σ^β.
+                # paper lines 11-18 are handled by the post-SVD tensor kernel
+                # below. β=1 (default) is the paper baseline; β=0.5 ≡ legacy
+                # "sqrt"; β=0 decouples the step from σ. ``clip`` is the only
+                # mode that does NOT use σ^β.
                 s_k = S[:k_step]
-                if sigma_mode == "clip":
-                    eta_prime = lr / (s_k + sigma_clip)
-                else:
-                    eta_prime = lr / (s_k.pow(power_beta) + eps)
-
-                # paper line 12-13: ‖d_g‖_F = σ_j / (√L + ϵ)  (since ‖u v^T‖_F = 1).
-                d_g_norm = s_k / (sqrt_loss + eps)
                 r_slice = r[:k_step]
-                r_new = r_slice / (1.0 + 0.5 * eta_prime * d_g_norm)        # paper line 13
 
                 # ι_t = mean_j |r_j^new/√L_t − σ_j| — per-step magnitude of
                 # the SAV intervention. The no-SAV (paper-tail) contribution
@@ -366,26 +391,26 @@ class SpecMuon(torch.optim.Optimizer):
                 state["last_iota"] = 0.0
                 state["last_iota_w"] = 0.0
                 if k_step > 0:
-                    sav_scale = r_new / (sqrt_loss + eps)
+                    O_top, r_next, sav_scale, iota, iota_w = self._sav_branch_update(
+                        U[:, :k_step],
+                        Vh[:k_step, :],
+                        s_k,
+                        r_slice,
+                        sqrt_loss,
+                        lr,
+                        xi,
+                        eps,
+                        sigma_clip,
+                        power_beta,
+                        sigma_mode == "clip",
+                    )
                     state["last_sav_scale"] = sav_scale.detach().clone()
-                    dev = (sav_scale - s_k).abs()
-                    state["last_iota"] = float(dev.mean().item())
-                    w_denom = s_k.sum() + eps
-                    state["last_iota_w"] = float(((s_k * dev).sum() / w_denom).item())
+                    state["last_iota"] = float(iota.item())
+                    state["last_iota_w"] = float(iota_w.item())
                     # paper line 14: O += (r_j^new / (√L + ϵ)) · u_j v_j^T
-                    scale = r_new / (sqrt_loss + eps)
-                    O.addmm_(U[:, :k_step] * scale.unsqueeze(0), Vh[:k_step, :])
-
-                    # paper line 16: T ← (1-ξ)(r^new)² + ξ(r_prev)² + (1-ξ)(r^new-r_prev)²
-                    T = ((1.0 - xi) * r_new ** 2
-                         + xi * r_slice ** 2
-                         + (1.0 - xi) * (r_new - r_slice) ** 2).clamp(min=0.0)
-                    sqrt_T = T.sqrt()
-                    # paper line 17: χ ← (√L - √T) / (√L - r^new + ϵ)
-                    denom = sqrt_loss - r_new + eps
-                    chi = ((sqrt_loss - sqrt_T) / denom).clamp(0.0, 1.0)
+                    O.add_(O_top)
                     # paper line 18: r_{t,j} ← clamp(χ,0,1)·r^new + (1-clamp(χ,0,1))·√L
-                    r[:k_step] = chi * r_new + (1.0 - chi) * sqrt_loss
+                    r[:k_step] = r_next
 
                 # paper line 22: O_t ← O_t + U_{k:} diag(S_{k:}) V^T_{k:}.
                 # ``tail_mode="muon"`` tests the true orthogonalized Muon tail
