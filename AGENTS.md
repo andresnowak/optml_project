@@ -86,6 +86,19 @@ uv run python tools/search_other_experiments.py --experiment matrix_factorizatio
 - Shakespeare results are more sensitive to model size, batch size, scheduler, and context length. Match the settings in `shakespeare_results.md` before comparing new claims.
 - For every reported experiment, include the hyperparameters used in the markdown/HTML prose and tables: LR, scheduler, momentum/betas when applicable, weight decay, step count, batch/context/model settings for Shakespeare, Muon-family `adjust_lr_fn`, and optimizer-specific settings such as `alpha`, scale clamps, or `spectrum_transform`.
 
+## SpecMuon Mechanism Experiments
+
+When evaluating SpecMuon, do not rely only on final-loss tables. Add controlled ablations and dynamics that explain what the optimizer actually did to the update spectrum and model parameters:
+
+- Compare at least these variants with the same seed, LR schedule, `adjust_lr_fn`, and model settings: `Muon`, `SpecMuon top_k=0`, `SpecMuon top_k=1`, `SpecMuon top_k=6`, a larger `top_k` such as `32`, `tail_mode="gradient"` (paper Algorithm 1 tail), and `tail_mode="muon"` (true Muon tail).
+- Include a tail-mode ablation whenever discussing the paper's "Muon update for remaining directions" language: `gradient` applies `U diag(S) V^T`; `muon` applies `U V^T`. Treat these as separate optimizer variants in tables, run names, and plots.
+- For each SpecMuon run, record SAV diagnostics alongside loss: `r_j`, `r_j / sqrt(loss + kappa)`, `sigma_j`, `|r_j / sqrt(loss + kappa) - sigma_j|`, `last_iota`, `last_iota_w`, `gate_active`, and the selected `k_step` when dynamic/gated modes are used.
+- To show "what it uses instead of Muon's 1s", plot the per-mode update scales: Muon uses `1` in active singular directions; SpecMuon top-k uses `r_j / sqrt(loss + kappa)`; the `gradient` tail uses `sigma_j`; the `muon` tail uses `1`.
+- For model dynamics, checkpoint trajectories should include parameter norms, gradient norms, top singular values of parameters and gradients, effective update singular values, and distance from Muon's all-ones spectrum (`mean |update_scale - 1|`, weighted mean, and top-mode deltas).
+- Prefer trajectory plots over final-only plots: loss, gradient top singular values, parameter top singular values, `r_j / sqrt(loss + kappa)` vs `sigma_j`, and update-scale distance from ones over time.
+- Use matrix factorization and ill-conditioned linear regression as mechanism tests because their spectra are inspectable; use Shakespeare only after the mechanism is visible on small problems.
+- Store durable mechanism outputs under `results/`, e.g. `results/specmuon_mechanism_<experiment>_runs.csv`, `results/specmuon_mechanism_<experiment>_checkpoints.csv`, plus markdown/HTML summaries. Include exact hyperparameters and optimizer kwargs in every summary.
+
 ## Coding Conventions
 
 - Keep changes scoped. Avoid unrelated refactors while running experiments or tuning optimizers.
