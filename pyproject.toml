@@ -12,6 +12,7 @@ dependencies = [
     "wandb",
     "matplotlib",
     "pytest",
+    "jupyter>=1.1.1",
 ]
 
 [tool.uv]
