@@ -5,10 +5,10 @@
 #   scripts/sweep.sh <group> <flag> <v1,v2,...> [common train.py args]
 #
 # Examples:
-#   scripts/sweep.sh beta_sweep --beta 0,0.25,0.5,1.0 --config configs/route.yaml --model gpt124m
-#   scripts/sweep.sh seed_route --seed 0,1,2 --config configs/route.yaml --model gpt124m
-#   scripts/sweep.sh seed_dynmuon --seed 0,1,2 --config configs/dynmuon.yaml --model gpt124m
-#   scripts/sweep.sh proxy --modulate-metric stable_rank,alignment --config configs/route.yaml --model gpt124m
+#   scripts/sweep.sh beta_sweep --beta 0,0.25,0.5,1.0 --config configs/route.yaml
+#   scripts/sweep.sh seed_route --seed 0,1,2 --config configs/route.yaml
+#   scripts/sweep.sh seed_dynmuon --seed 0,1,2 --config configs/dynmuon.yaml
+#   scripts/sweep.sh proxy --modulate-metric stable_rank,alignment --config configs/route.yaml
 #
 # Each value becomes one `run_job.sh single` job: --wandb, --wandb-group <group>,
 # --run-name <group>_<value>, plus the flag and the common args.
