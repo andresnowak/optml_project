@@ -23,6 +23,8 @@ def main() -> None:
     ap.add_argument("--warmup-steps", dest="warmup_steps", type=int)
     ap.add_argument("--min-lr-ratio", dest="min_lr_ratio", type=float)
     ap.add_argument("--muon-lr", dest="muon_lr", type=float)
+    ap.add_argument("--adam-lr", dest="adam_lr", type=float)
+    ap.add_argument("--weight-decay", dest="weight_decay", type=float)
     ap.add_argument("--noise-lambda", dest="noise_lambda", type=float)
     ap.add_argument("--beta", type=float)
     ap.add_argument("--modulate-metric", dest="modulate_metric",
@@ -30,6 +32,8 @@ def main() -> None:
     ap.add_argument("--dynamic-ref", dest="dynamic_ref", action=argparse.BooleanOptionalAction)
     ap.add_argument("--run-name", dest="run_name")
     ap.add_argument("--wandb-group", dest="wandb_group")
+    ap.add_argument("--wandb-project", dest="wandb_project")
+    ap.add_argument("--wandb-entity", dest="wandb_entity")
     ap.add_argument("--device")
     ap.add_argument("--wandb", action="store_true", default=None)
     args = ap.parse_args()

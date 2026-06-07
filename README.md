@@ -114,9 +114,11 @@ Run any single method: `python train.py --config configs/<method>.yaml`.
 `train.py` exposes a small set of config-key overrides for ad-hoc runs:
 `--seed`, `--routing-mode`, `--compute-mode`, `--ns-variant`, `--train-steps`,
 `--batch-size`, `--sequence-length`, `--mbs`, `--val-tokens`, `--val-loss-every`,
-`--warmup-steps`, `--min-lr-ratio`, `--muon-lr`, `--beta`,
+`--warmup-steps`, `--min-lr-ratio`, `--muon-lr`, `--adam-lr`,
+`--weight-decay`, `--beta`,
 `--modulate-metric`, `--dynamic-ref/--no-dynamic-ref`, `--noise-lambda`,
-`--run-name`, `--wandb-group`, `--device`, and `--wandb`.
+`--run-name`, `--wandb-group`, `--wandb-project`, `--wandb-entity`, `--device`,
+and `--wandb`.
 
 `scripts/sweep.sh` submits a one-parameter sweep as separate W&B runs in one group:
 

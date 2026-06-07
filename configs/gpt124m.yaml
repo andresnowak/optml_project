@@ -21,3 +21,4 @@ warmup_steps: 150      # ~10% warmup, then cosine decay
 min_lr_ratio: 0.0001      # final LR is 0.01% of max LR so 2e-6 for matrix, 6e-8 for others
 val_tokens: 10485760
 val_loss_every: 125
+weight_decay: 0.1
