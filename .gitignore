@@ -26,6 +26,7 @@ ENV/
 # ML / training artifacts
 data/*
 !data/prepare_wikitext.py
+!data/prepare_fineweb.py
 
 artifacts/
 /models/

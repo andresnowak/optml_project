@@ -14,7 +14,8 @@
 # `uv run --no-sync python "$@"`.
 #
 # Subcommands:
-#   prep        tokenize WikiText-103 -> data/wikitext103/{train,val}.bin (run once)
+#   prep        tokenize WikiText-103 -> data/wikitext103/{train,val}.bin
+#   prep-fineweb download FineWeb10B GPT-2 token shards, e.g. prep-fineweb 500M
 #   sanity      50-step small-model smoke test
 #   single      one train.py run (pass train.py args after the subcommand)
 #   exp1        spectral-evolution experiment
@@ -29,6 +30,7 @@
 #
 # Examples:
 #   scripts/run_job.sh prep
+#   scripts/run_job.sh prep-fineweb 500M
 #   scripts/run_job.sh baselines --train-steps 20000
 #   scripts/run_job.sh single --config configs/route.yaml --wandb
 # ============================================================
@@ -107,6 +109,8 @@ CMD="${1:-}"; shift || true
 case "${CMD}" in
   prep)
     _submit "dynmuon-prep-${STAMP}" "${PROJECT_DIR}/data/prepare_wikitext.py" ;;
+  prep-fineweb)
+    _submit "dynmuon-prep-fineweb-${STAMP}" "${PROJECT_DIR}/data/prepare_fineweb.py" "${1:-500M}" ;;
   probe)
     _submit "dynmuon-probe-${STAMP}" "${PROJECT_DIR}/experiments/probe_proxies.py" "$@" ;;
   sanity)
@@ -126,6 +130,6 @@ case "${CMD}" in
   list)
     runai list ;;
   *)
-    echo "usage: $0 {prep|probe|sanity|single|exp1|exp2|baselines|logs|delete|list} [args]" >&2
+    echo "usage: $0 {prep|prep-fineweb|probe|sanity|single|exp1|exp2|baselines|logs|delete|list} [args]" >&2
     exit 1 ;;
 esac

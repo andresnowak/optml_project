@@ -3,6 +3,7 @@
 # the per-layer p_{t,l} trajectories. Extends the small config for iteration.
 extends: small.yaml
 
+# 400 steps ~= 0.056 WikiText epochs with small.yaml batching.
 train_steps: 400
 val_loss_every: 400
 log_every: 5

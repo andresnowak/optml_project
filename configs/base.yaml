@@ -29,7 +29,7 @@ width_ratio: 0.04          # schedule width
 momentum: 0.95
 nesterov: true
 adjust_lr_fn: spectral_norm   # spectral_norm | none; Muon also supports keller_jordan
-muon_lr: 0.02              # DynMuon-Route matrices
+muon_lr: 2.0e-2            # max matrix LR
 adam_lr: 6.0e-4           # embeddings / norms / biases
 weight_decay: 0.1
 scalar_weight_decay: 0.0
@@ -39,8 +39,8 @@ warmup_steps: 150
 min_lr_ratio: 0.1
 grad_clip: 1.0
 
-# Batching: batch_size and mbs are sequences.
-# Tokens/step = batch_size * sequence_length.
+# batch_size/mbs are sequences. WikiText train: 117.9M tokens.
+# 262k tokens/step; 3,125 steps ~= 6.95 WikiText epochs.
 batch_size: 256
 mbs: 64
 train_steps: 3125

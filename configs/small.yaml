@@ -6,6 +6,8 @@ model_dim: 256
 n_layer: 4
 n_head: 4
 sequence_length: 256
+
+# 16k tokens/step; 2,000 steps ~= 0.28 WikiText epochs.
 batch_size: 64
 mbs: 8
 train_steps: 2000

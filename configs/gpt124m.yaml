@@ -6,24 +6,18 @@ model_dim: 768
 n_layer: 12
 n_head: 6
 sequence_length: 1024
+data_dir: data/fineweb10B
+train_bin: fineweb_train_*.bin
+val_bin: fineweb_val_000000.bin
 
-# Token accounting for current WikiText-103 cache:
-#   train.bin: 117,920,141 GPT-2-BPE tokens
-#   val.bin:      247,290 GPT-2-BPE tokens
-#
-# Batching:
-#   batch_size is sequences per optimizer step.
-#   mbs is sequences per microbatch.
-#   tokens/step = batch_size * sequence_length.
-# Current values:
-#   256 sequences/step * 1,024 tokens = 262,144 tokens/step.
-#   4 microbatches/step of 64 sequences each.
-#   one train-token pass ~= 117,920,141 / 262,144 = 449.8 optimizer steps.
-#   3,125 steps = 819,200,000 train tokens ~= 6.95 train-token passes.
-#   validation requests 10,485,760 tokens but is capped to the tiny val split
-#   (247,290 tokens, rounded to full 1,024-token sequences by the trainer).
+# FineWeb 500M cache: `uv run python data/prepare_fineweb.py 500M`.
+# 262k tokens/step; 1,526 steps ~= 400M train tokens (~0.8 FineWeb epochs).
+muon_lr: 2.0e-2            # max matrix LR
+adam_lr: 6.0e-4           # embeddings / norms / biases
 batch_size: 256
 mbs: 64
-train_steps: 3125
+train_steps: 1526
+warmup_steps: 150      # ~10% warmup, then cosine decay
+min_lr_ratio: 0.0001      # final LR is 0.01% of max LR so 2e-6 for matrix, 6e-8 for others
 val_tokens: 10485760
 val_loss_every: 125

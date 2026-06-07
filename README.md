@@ -95,6 +95,7 @@ scripts/
   run_job.sh             # RunAI cluster submission (+ container_entry.sh)
 data/
   prepare_wikitext.py    # WikiText-103 -> GPT-2-BPE train.bin/val.bin
+  prepare_fineweb.py     # FineWeb10B GPT-2-BPE shards by requested token count
 ```
 
 ## Methods (one config each)
@@ -140,7 +141,8 @@ optimizer step is `batch_size * sequence_length`.
 ```bash
 uv sync
 uv run pytest validate_math.py                         # spectral-math unit tests
-uv run python data/prepare_wikitext.py                  # tokenize WikiText-103
+uv run python data/prepare_wikitext.py                  # default small/base data
+uv run python data/prepare_fineweb.py 500M              # gpt124m data: 5 shards ~= 1 GB
 uv run python train.py --config configs/small.yaml --train-steps 50   # smoke test
 uv run python experiments/baselines_step_efficiency.py  # 4-method comparison (124M configs)
 uv run python experiments/exp1_spectral_evolution.py    # spectral-evolution plot (small model)
@@ -175,6 +177,7 @@ Then SSH to the synced checkout on RCP and submit jobs:
 
 ```bash
 scripts/run_job.sh prep
+scripts/run_job.sh prep-fineweb 500M
 scripts/run_job.sh sanity
 scripts/run_job.sh single --config configs/route.yaml --wandb
 scripts/run_job.sh baselines --train-steps 20000
