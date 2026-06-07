@@ -143,6 +143,8 @@ uv run python main.py --config configs/shakespeare_specmuon_tail_ablation.yaml \
 | `--svd-top-k K` | only show top-k singular values |
 
 `--wandb-project` and `--wandb-entity` default to `WANDB_PROJECT` / `WANDB_ENTITY` from `.env`, then fall back to `mlo-specmuon` / `cs-439-project`.
+`--wandb-group` optionally groups related runs in the W&B UI; it defaults to
+`WANDB_GROUP` if set.
 WandB runs also receive the resolved CLI/config settings, optimizer kwargs,
 experiment kwargs, run tag, SpecMuon target, and model parameter count in the
 run config.
@@ -162,6 +164,7 @@ BACKEND=wandb \
 LOG_SAV_R=1 \
 WANDB_PROJECT=mlo-specmuon-shakespeare \
 WANDB_ENTITY=<wandb-entity> \
+WANDB_GROUP=tail_ablation_20260607 \
 SWEEP="top_k=0,1,8,16,32 tail_mode=gradient,muon momentum_mode=post_spectral,post_spectral_nesterov" \
 ./scripts/run_job.sh sweep
 ```
@@ -199,7 +202,7 @@ Training/config environment variables forwarded to `main.py`:
 | `STEPS`, `LR`, `MIN_LR`, `SCHEDULER`, `SEED`, `LOG_EVERY` | training controls |
 | `TOP_K`, `SIGMA_MODE`, `TAIL_MODE`, `GATE_THRESHOLD`, `GATE_WINDOW`, `KAPPA` | SpecMuon controls |
 | `CONDITION_NUMBER` | ill-conditioned linear-regression override |
-| `BACKEND`, `WANDB_PROJECT`, `WANDB_ENTITY`, `LOG_SAV_R` | logging controls |
+| `BACKEND`, `WANDB_PROJECT`, `WANDB_ENTITY`, `WANDB_GROUP`, `LOG_SAV_R` | logging controls |
 | `CHECKPOINT_DIR`, `CHECKPOINT_EVERY` | checkpoint controls |
 | `SPECMUON_TARGET` | `--specmuon-target` |
 | `COMPARE_OPTIMIZERS` | optimizer subset for comparison modes |

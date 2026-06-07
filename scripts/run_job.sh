@@ -114,7 +114,7 @@ for _v in CONFIG EXPERIMENT OPTIMIZER STEPS LR MIN_LR SEED LOG_EVERY \
           SCHEDULER \
           TOP_K SIGMA_MODE GATE_THRESHOLD GATE_WINDOW KAPPA \
           TAIL_MODE \
-          BACKEND LOG_SAV_R WANDB_PROJECT WANDB_ENTITY CHECKPOINT_DIR CHECKPOINT_EVERY \
+          BACKEND LOG_SAV_R WANDB_PROJECT WANDB_ENTITY WANDB_GROUP CHECKPOINT_DIR CHECKPOINT_EVERY \
           SPECMUON_TARGET COMPARE_OPTIMIZERS CONDITION_NUMBER \
           RUN_TAG LR_MIN LR_MAX LR_N; do
     eval "_USER_${_v}=\"\${${_v}+set}\""
@@ -147,6 +147,7 @@ CONDITION_NUMBER="${CONDITION_NUMBER:-}"      # default in the experiment is 1e4
 BACKEND="${BACKEND:-wandb}"                   # null | matplotlib | wandb
 WANDB_PROJECT="${WANDB_PROJECT:-mlo-specmuon-${EXPERIMENT//_/-}}"
 WANDB_ENTITY="${WANDB_ENTITY:-cs-439-project}"
+WANDB_GROUP="${WANDB_GROUP:-}"
 LOG_SAV_R="${LOG_SAV_R:-0}"                   # 1 ⇒ --log-sav-r
 
 # Checkpointing (on the PVC so checkpoints survive the pod). Off by default;
@@ -198,12 +199,14 @@ _build_main_args() {
         _append_if_user_set "BACKEND" "--backend" "${BACKEND}"
         _append_if_user_set "WANDB_PROJECT" "--wandb-project" "${WANDB_PROJECT}"
         _append_if_user_set "WANDB_ENTITY" "--wandb-entity" "${WANDB_ENTITY}"
+        _append_if_user_set "WANDB_GROUP" "--wandb-group" "${WANDB_GROUP}"
     else
         MAIN_ARGS+=(--experiment "${EXPERIMENT}")
         MAIN_ARGS+=(--optimizer "${OPTIMIZER}" --lr "${LR}" --steps "${STEPS}"
                     --seed "${SEED}" --log-every "${LOG_EVERY}"
                     --backend "${BACKEND}"
                     --wandb-project "${WANDB_PROJECT}" --wandb-entity "${WANDB_ENTITY}")
+        _append_if_set "--wandb-group" "${WANDB_GROUP}"
         _append_if_set "--min-lr" "${MIN_LR}"
         _append_if_set "--scheduler" "${SCHEDULER}"
     fi

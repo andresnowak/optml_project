@@ -348,6 +348,9 @@ def _build_parser() -> argparse.ArgumentParser:
     log_group.add_argument("--wandb-entity", type=str,
                            default=os.getenv("WANDB_ENTITY", "cs-439-project"),
                            help="WandB entity / team. Defaults to $WANDB_ENTITY or 'cs-439-project'.")
+    log_group.add_argument("--wandb-group", type=str,
+                           default=os.getenv("WANDB_GROUP"),
+                           help="Optional WandB group shared by related runs in a sweep.")
 
     modes = parser.add_argument_group("modes")
     modes.add_argument("--compare-all", action="store_true", help="Run all optimizers at --lr.")
@@ -428,6 +431,7 @@ def main() -> None:
                          save_path=args.save_plot,
                          wandb_project=args.wandb_project,
                          wandb_entity=args.wandb_entity,
+                         wandb_group=args.wandb_group,
                          config=vars(args), svd_top_k=args.svd_top_k)
 
     def reset_seeds() -> None:
