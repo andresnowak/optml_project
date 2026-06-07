@@ -34,7 +34,7 @@ log_every: 10
 eval_iters: 20
 wandb: false
 wandb_project: dynmuon-route
-wandb_entity: null         # null -> use WANDB_ENTITY env / default team
+wandb_entity: cs-439-project   # W&B team; null -> use WANDB_ENTITY env / default
 
 # experiment 2 — anisotropic noise injection (0 disables)
 noise_lambda: 0.0
