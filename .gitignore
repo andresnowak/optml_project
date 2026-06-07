@@ -24,9 +24,11 @@ ENV/
 .ruff_cache/
 
 # ML / training artifacts
-data/
+data/*
+!data/prepare_wikitext.py
+
 artifacts/
-models/
+/models/
 runs/
 wandb/
 mlruns/

@@ -2,13 +2,13 @@
 
 Trains the GPT twice on WikiText-103 — once with the global time schedule, once
 with the Stable-Rank router — and plots the per-layer ``p_{t,l}`` trajectories for
-``c_attn``, ``c_proj``, ``mlp.c_fc`` and ``mlp.c_proj``.
+``q``, ``k``, ``v``, attention ``proj``, ``mlp.fc`` and ``mlp.proj``.
 
 Scientific question: do Attention layers reject negative p (stay p >= 0) while MLP
 layers transition toward p = -0.25?
 
 Usage:
-    python experiments/exp1_spectral_evolution.py --config configs/gpt124m.yaml --model small --max-steps 400
+    python experiments/exp1_spectral_evolution.py --config configs/exp1_spectral.yaml --train-steps 400
 """
 
 from __future__ import annotations
@@ -20,17 +20,19 @@ import sys
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dynmuon import analysis, build_arm_logger, load_config, train  # noqa: E402
+from src import analysis, build_arm_logger, load_config, train  # noqa: E402
 
-TARGETS = ["attn.c_attn.weight", "attn.c_proj.weight", "mlp.c_fc.weight", "mlp.c_proj.weight"]
+TARGETS = [
+    "attn.q.weight", "attn.k.weight", "attn.v.weight", "attn.proj.weight",
+    "mlp.fc.weight", "mlp.proj.weight",
+]
 OUT_DIR = os.path.join("results", "exp1_spectral_evolution")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/exp1_spectral.yaml")
-    ap.add_argument("--model", choices=["small", "gpt124m"])
-    ap.add_argument("--max-steps", dest="max_steps", type=int)
+    ap.add_argument("--train-steps", dest="train_steps", type=int)
     ap.add_argument("--modulate-metric", dest="modulate_metric",
                     choices=["stable_rank", "snr", "alignment"])
     ap.add_argument("--beta", type=float)
@@ -41,8 +43,7 @@ def main() -> None:
 
     runs = {}
     for mode in ("global_schedule", "schedule_modulated"):
-        cfg = load_config(args.config, {"model": args.model, "max_steps": args.max_steps,
-                                        "routing_mode": mode,
+        cfg = load_config(args.config, {"train_steps": args.train_steps, "routing_mode": mode,
                                         "modulate_metric": args.modulate_metric, "beta": args.beta})
         print(f"\n=== training routing_mode={mode} ===")
         logger, mem, wb = build_arm_logger(cfg, args.wandb, f"exp1_{mode}", args.wandb_group)
@@ -52,7 +53,7 @@ def main() -> None:
         runs[mode] = mem.history
         analysis.dump_history(mem.history, os.path.join(OUT_DIR, f"history_{mode}.json"))
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
+    fig, axes = plt.subplots(2, 3, figsize=(13, 8), sharex=True)
     for ax, suffix in zip(axes.flat, TARGETS):
         for mode, hist in runs.items():
             s = analysis.mean_series_by_suffix(hist, suffix)

@@ -3,7 +3,7 @@
 # p-trajectory stability.
 extends: small.yaml
 
-max_steps: 300
-eval_every: 300
+train_steps: 300
+val_loss_every: 300
 log_every: 5
 noise_lambda: 3.0

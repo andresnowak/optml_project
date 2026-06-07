@@ -1,11 +1,11 @@
-"""DynMuon-Route: dynamic layer-wise spectral-exponent routing for Muon."""
+"""Optimizer benchmark infrastructure."""
 
 from . import analysis
 from .config import load_config, pick_device
 from .models import GPT, GPTConfig
-from .optimizer import DynMuonRoute, logistic_route, newton_schulz
+from .optimizers import DynMuonRoute, build_optimizers, logistic_route, newton_schulz
 from .trainer import (
-    MemoryLogger, TeeLogger, WandbLogger, build_arm_logger, build_optimizers, train,
+    MemoryLogger, TeeLogger, WandbLogger, build_arm_logger, train,
 )
 
 __all__ = [

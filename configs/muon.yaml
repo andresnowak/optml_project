@@ -1,5 +1,9 @@
 # Baseline: standard Muon (fixed spectral exponent p = 0, the polar factor).
 extends: gpt124m.yaml
-routing_mode: fixed
-fixed_p: 0.0
+matrix_optimizer: muon
+ns_steps: 12
+# Alternative equivalent baseline through DynMuonRoute:
+# matrix_optimizer: dynmuon
+# routing_mode: fixed
+# fixed_p: 0.0
 run_name: muon

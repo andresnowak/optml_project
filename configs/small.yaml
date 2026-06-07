@@ -1,10 +1,14 @@
-# Small GPT for fast local iteration / smoke tests. d = min(rows,cols) ≈ 256.
+# Small GPT for fast local iteration / smoke tests.
 extends: base.yaml
 
 model: small
-
-max_steps: 2000
+model_dim: 256
+n_layer: 4
+n_head: 4
+sequence_length: 256
+batch_size: 64
+mbs: 8
+train_steps: 2000
 warmup_steps: 100
-batch_size: 16
-grad_accum: 1
-eval_every: 200
+val_tokens: 1048576
+val_loss_every: 200

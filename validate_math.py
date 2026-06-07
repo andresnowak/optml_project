@@ -15,8 +15,8 @@ import math
 import pytest
 import torch
 
-from dynmuon import DynMuonRoute, logistic_route, newton_schulz
-from dynmuon.optimizer import quintic_newton_schulz
+from src import DynMuonRoute, logistic_route, newton_schulz
+from src.optimizers.dynmuon import quintic_newton_schulz
 
 torch.manual_seed(0)
 

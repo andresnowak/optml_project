@@ -8,8 +8,8 @@ global DynMuon schedule reaches the target in ~10-26% fewer steps than Muon; thi
 script reports that number and the router's gain on top.
 
 Usage:
-    python experiments/baselines_step_efficiency.py            # small model, local
-    python experiments/baselines_step_efficiency.py --model gpt124m --max-steps 20000
+    python experiments/baselines_step_efficiency.py
+    python experiments/baselines_step_efficiency.py --train-steps 20000
     python experiments/baselines_step_efficiency.py --target-loss 4.0
 """
 
@@ -22,7 +22,7 @@ import sys
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dynmuon import analysis, build_arm_logger, load_config, train  # noqa: E402
+from src import analysis, build_arm_logger, load_config, train  # noqa: E402
 
 METHODS = [
     ("adamw", "configs/adamw.yaml"),
@@ -36,9 +36,8 @@ VAL_KEY = "val/loss"
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", choices=["small", "gpt124m"])
-    ap.add_argument("--max-steps", dest="max_steps", type=int)
-    ap.add_argument("--eval-every", dest="eval_every", type=int)
+    ap.add_argument("--train-steps", dest="train_steps", type=int)
+    ap.add_argument("--val-loss-every", dest="val_loss_every", type=int)
     ap.add_argument("--seed", type=int)
     ap.add_argument("--target-loss", dest="target_loss", type=float,
                     help="common val-loss target; default = the loss every method reaches")
@@ -46,8 +45,8 @@ def main() -> None:
     ap.add_argument("--wandb-group", dest="wandb_group", default="baselines")
     args = ap.parse_args()
     os.makedirs(OUT_DIR, exist_ok=True)
-    common = {"model": args.model, "max_steps": args.max_steps,
-              "eval_every": args.eval_every, "seed": args.seed}
+    common = {"train_steps": args.train_steps, "val_loss_every": args.val_loss_every,
+              "seed": args.seed}
 
     runs: dict[str, dict] = {}
     for name, cfg_path in METHODS:

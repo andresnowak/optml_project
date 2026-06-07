@@ -3,16 +3,24 @@
 
 device: auto
 seed: 0
-mlp: gelu                  # gelu | gated
 data_dir: data/wikitext103
+train_bin: train.bin
+val_bin: val.bin
+
+# model / data shape
+sequence_length: 1024
+vocab_size: 50304
+model_dim: 768
+n_layer: 12
+n_head: 6
 
 # method
-matrix_optimizer: dynmuon       # dynmuon (DynMuonRoute on matrices) | adamw (baseline)
+matrix_optimizer: dynmuon       # dynmuon | muon | adamw
 routing_mode: schedule_modulated  # fixed | global_schedule | schedule_modulated | stable_rank | snr | alignment
 fixed_p: 0.0               # used when routing_mode=fixed (0.0 = Muon, 1.0 = SGD)
 compute_mode: ns           # ns (fast Newton-Schulz/eigen) | svd (exact)
 ns_variant: quintic        # quintic (reference DynMuon) | cubic (textbook)
-ns_steps: 5                # cubic iterations (quintic is fixed at 5)
+ns_steps: 5                # DynMuon cubic steps; Muon configs override this to 12
 # global_schedule logistic (reference DynMuon get_p): p drops 1 -> -0.25
 tau_ratio: 0.04            # schedule center (fraction of total steps)
 width_ratio: 0.04          # schedule width
@@ -20,18 +28,27 @@ width_ratio: 0.04          # schedule width
 # optimization
 momentum: 0.95
 nesterov: true
-adjust_lr_fn: spectral_norm   # sqrt(fan_out/fan_in); null disables
+adjust_lr_fn: spectral_norm   # spectral_norm | none; Muon also supports keller_jordan
 muon_lr: 0.02              # DynMuon-Route matrices
 adam_lr: 6.0e-4           # embeddings / norms / biases
 weight_decay: 0.1
+scalar_weight_decay: 0.0
 
 # schedule
+warmup_steps: 150
 min_lr_ratio: 0.1
 grad_clip: 1.0
 
+# Batching: batch_size and mbs are sequences.
+# Tokens/step = batch_size * sequence_length.
+batch_size: 256
+mbs: 64
+train_steps: 3125
+val_tokens: 10485760
+val_loss_every: 125
+
 # logging / eval
 log_every: 10
-eval_iters: 20
 wandb: false
 wandb_project: dynmuon-route
 wandb_entity: cs-439-project   # W&B team; null -> use WANDB_ENTITY env / default

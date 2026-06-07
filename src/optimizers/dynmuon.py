@@ -77,7 +77,7 @@ def _svd(X: torch.Tensor):
 
 def _shape_lr_scale(fan_out: int, fan_in: int, adjust_lr_fn: str | None) -> float:
     """Spectral-norm LR scaling ``sqrt(fan_out / fan_in)`` (reference DynMuon)."""
-    if adjust_lr_fn is None:
+    if adjust_lr_fn in (None, "none"):
         return 1.0
     return float(math.sqrt(fan_out / fan_in))
 
@@ -176,8 +176,11 @@ class DynMuonRoute(torch.optim.Optimizer):
             raise ValueError(f"ns_variant must be one of {NS_VARIANTS}, got {ns_variant}")
         if modulate_metric not in PROXY_METRICS:
             raise ValueError(f"modulate_metric must be one of {PROXY_METRICS}, got {modulate_metric}")
-        if adjust_lr_fn not in (None, "spectral_norm"):
-            raise ValueError(f"adjust_lr_fn must be None or 'spectral_norm', got {adjust_lr_fn}")
+        if adjust_lr_fn not in (None, "none", "spectral_norm"):
+            raise ValueError(
+                "DynMuon adjust_lr_fn must be None, 'none', or 'spectral_norm' "
+                f"(got {adjust_lr_fn!r})"
+            )
         if routing_mode in ("global_schedule", "schedule_modulated") and not total_steps:
             raise ValueError(f"routing_mode={routing_mode!r} requires total_steps > 0")
         defaults = dict(
