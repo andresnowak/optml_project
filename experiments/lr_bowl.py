@@ -145,6 +145,8 @@ def main() -> None:
                     help="Metrics to plot. Default: val/loss,train/loss.")
     ap.add_argument("--x-key", default="auto",
                     help="LR config key, or auto to try adam_lr, muon_lr, lr.")
+    ap.add_argument("--state", action="append", default=["finished"],
+                    help="W&B run state to include. Repeat or comma-separate; use 'all' to disable filtering.")
     ap.add_argument("--selection", choices=("final", "best"), default="final")
     ap.add_argument("--out-dir", default="results/lr_bowls")
     args = ap.parse_args()
@@ -156,6 +158,7 @@ def main() -> None:
     if not labels:
         labels = groups
     metrics = _split_csv(args.metrics) or list(DEFAULT_METRICS)
+    states = set(_split_csv(args.state))
 
     import wandb
 
@@ -167,6 +170,9 @@ def main() -> None:
             print(f"warning: no W&B runs found for group {group!r} in {path}")
             continue
         for run in runs:
+            if "all" not in states and run.state not in states:
+                print(f"skipping {group}: {run.name} has state {run.state!r}")
+                continue
             try:
                 rows.append(_run_row(run, group, label, metrics, args.x_key))
             except ValueError as exc:

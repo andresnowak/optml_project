@@ -19,6 +19,8 @@ def main() -> None:
     ap.add_argument("--sequence-length", dest="sequence_length", type=int)
     ap.add_argument("--mbs", type=int, help="sequences per microbatch")
     ap.add_argument("--val-tokens", dest="val_tokens", type=int)
+    ap.add_argument("--val-batch-size", dest="val_batch_size", type=int,
+                    help="validation sequences per forward pass")
     ap.add_argument("--val-loss-every", dest="val_loss_every", type=int)
     ap.add_argument("--warmup-steps", dest="warmup_steps", type=int)
     ap.add_argument("--min-lr-ratio", dest="min_lr_ratio", type=float)

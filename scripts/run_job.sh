@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# RunAI submission wrapper for DynMuon-Route.
+# RunAI submission wrapper for optimizer experiments.
 #
 # The repo must live on the home PVC as seen by the RunAI pod. This script can
 # be run from the cluster checkout directly, or from a local machine after
@@ -24,7 +24,7 @@
 #   logs <job> | delete <job> | list
 #
 # Env: .env is loaded if present. Common overrides:
-#      IMAGE/RUNAI_IMAGE, GPUS, CLUSTER_HOME, PROJECT_DIR, NODE_POOLS,
+#      JOB_PREFIX, IMAGE/RUNAI_IMAGE, GPUS, CLUSTER_HOME, PROJECT_DIR, NODE_POOLS,
 #      LDAP_UID/LDAP_GID, PYTHONUNBUFFERED, UV_SYNC, UV_SYNC_ARGS, HF_TOKEN,
 #      WANDB_API_KEY, WANDB_PROJECT, WANDB_ENTITY.
 #
@@ -72,6 +72,7 @@ else
     PROJECT_DIR="${PROJECT_DIR:-${LOCAL_PROJECT_DIR}}"
 fi
 ENTRY_SH="${PROJECT_DIR}/scripts/container_entry.sh"
+JOB_PREFIX="${JOB_PREFIX:-optml}"
 STAMP="$(date +%Y%m%d-%H%M%S)-${RANDOM}"   # random suffix avoids name clashes on rapid submits
 
 # Mount the home PVC so the repo + data + wandb cache persist and are visible
@@ -108,21 +109,21 @@ _submit() {
 CMD="${1:-}"; shift || true
 case "${CMD}" in
   prep)
-    _submit "dynmuon-prep-${STAMP}" "${PROJECT_DIR}/data/prepare_wikitext.py" ;;
+    _submit "${JOB_PREFIX}-prep-${STAMP}" "${PROJECT_DIR}/data/prepare_wikitext.py" ;;
   prep-fineweb)
-    _submit "dynmuon-prep-fineweb-${STAMP}" "${PROJECT_DIR}/data/prepare_fineweb.py" "${1:-500M}" ;;
+    _submit "${JOB_PREFIX}-prep-fineweb-${STAMP}" "${PROJECT_DIR}/data/prepare_fineweb.py" "${1:-500M}" ;;
   probe)
-    _submit "dynmuon-probe-${STAMP}" "${PROJECT_DIR}/experiments/probe_proxies.py" "$@" ;;
+    _submit "${JOB_PREFIX}-probe-${STAMP}" "${PROJECT_DIR}/experiments/probe_proxies.py" "$@" ;;
   sanity)
-    _submit "dynmuon-sanity-${STAMP}" "${PROJECT_DIR}/train.py" --config configs/small.yaml --train-steps 50 ;;
+    _submit "${JOB_PREFIX}-sanity-${STAMP}" "${PROJECT_DIR}/train.py" --config configs/small.yaml --train-steps 50 ;;
   single)
-    _submit "dynmuon-single-${STAMP}" "${PROJECT_DIR}/train.py" "$@" ;;
+    _submit "${JOB_PREFIX}-single-${STAMP}" "${PROJECT_DIR}/train.py" "$@" ;;
   exp1)
-    _submit "dynmuon-exp1-${STAMP}" "${PROJECT_DIR}/experiments/exp1_spectral_evolution.py" "$@" ;;
+    _submit "${JOB_PREFIX}-exp1-${STAMP}" "${PROJECT_DIR}/experiments/exp1_spectral_evolution.py" "$@" ;;
   exp2)
-    _submit "dynmuon-exp2-${STAMP}" "${PROJECT_DIR}/experiments/exp2_noise_injection.py" "$@" ;;
+    _submit "${JOB_PREFIX}-exp2-${STAMP}" "${PROJECT_DIR}/experiments/exp2_noise_injection.py" "$@" ;;
   baselines)
-    _submit "dynmuon-baselines-${STAMP}" "${PROJECT_DIR}/experiments/baselines_step_efficiency.py" "$@" ;;
+    _submit "${JOB_PREFIX}-baselines-${STAMP}" "${PROJECT_DIR}/experiments/baselines_step_efficiency.py" "$@" ;;
   logs)
     runai logs "${1:?usage: $0 logs <job-name>}" ;;
   delete)

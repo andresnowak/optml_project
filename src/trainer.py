@@ -136,11 +136,12 @@ def estimate_loss(model, data, cfg, device, amp_ctx) -> tuple[float, int]:
     model.eval()
     sequence_length = cfg["sequence_length"]
     train_batch_tokens = cfg["batch_size"] * sequence_length
+    val_batch_tokens = cfg.get("val_batch_size", cfg["mbs"]) * sequence_length
     requested = min(cfg["val_tokens"], max(0, len(data) - 1))
     actual = (requested // sequence_length) * sequence_length
     if actual <= 0:
         raise ValueError("validation data is too small")
-    batch_tokens = min(train_batch_tokens, actual)
+    batch_tokens = min(train_batch_tokens, val_batch_tokens, actual)
     batch_tokens = (batch_tokens // sequence_length) * sequence_length
     weighted_loss = 0.0
     weighted_tokens = 0

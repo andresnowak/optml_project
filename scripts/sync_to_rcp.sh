@@ -30,6 +30,8 @@ EXCLUDES=(
     --exclude .pytest_cache
     --exclude __pycache__
     --exclude wandb
+    --exclude data/fineweb10B
+    --exclude data/wikitext103
     --exclude '*.pyc'
 )
 
