@@ -39,3 +39,5 @@ mlruns/
 
 # OS
 .DS_Store
+# experiment outputs
+results/

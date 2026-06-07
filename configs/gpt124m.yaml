@@ -3,9 +3,10 @@ extends: base.yaml
 
 model: gpt124m
 
-# token budget
-max_steps: 20000
-warmup_steps: 400
-batch_size: 12
-grad_accum: 40            # ~0.5M tokens/step at block_size 1024
-eval_every: 500
+# token budget — kept small for fast turnaround (~0.2B tokens, a few WT-103
+# epochs). Bump max_steps/grad_accum back up for a full 10B-token run.
+max_steps: 3000
+warmup_steps: 150
+batch_size: 16
+grad_accum: 8             # ~0.13M tokens/step at block_size 1024
+eval_every: 250

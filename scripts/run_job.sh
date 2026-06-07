@@ -61,6 +61,8 @@ CMD="${1:-}"; shift || true
 case "${CMD}" in
   prep)
     _submit "dynmuon-prep-${STAMP}" "${PROJECT_DIR}/scripts/prepare_wikitext.py" ;;
+  probe)
+    _submit "dynmuon-probe-${STAMP}" "${PROJECT_DIR}/experiments/probe_proxies.py" "$@" ;;
   sanity)
     _submit "dynmuon-sanity-${STAMP}" "${PROJECT_DIR}/train.py" --config configs/small.yaml --max-steps 50 ;;
   single)
@@ -78,6 +80,6 @@ case "${CMD}" in
   list)
     runai list ;;
   *)
-    echo "usage: $0 {prep|sanity|single|exp1|exp2|baselines|logs|delete|list} [args]" >&2
+    echo "usage: $0 {prep|probe|sanity|single|exp1|exp2|baselines|logs|delete|list} [args]" >&2
     exit 1 ;;
 esac

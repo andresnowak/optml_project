@@ -1,4 +1,4 @@
-# Our method: DynMuon-Route with the per-layer Stable-Rank router.
+# Our method: DynMuon-Route — the schedule-modulated per-layer router.
 extends: gpt124m.yaml
-routing_mode: stable_rank
+routing_mode: schedule_modulated
 run_name: dynmuon_route

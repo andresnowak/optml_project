@@ -12,9 +12,23 @@ spectral operator `D(p) = U Σ^p Vᵀ`:
 
 **DynMuon** drives a single global logistic *time* schedule `p_t : 1 → -0.25` for
 every layer (reference `get_p`: `p = p_min + (p_max-p_min)/(1+exp((q_t-τ)/w))`,
-with `q_t = step/total_steps`, `τ = w = 0.04`). **DynMuon-Route** (this repo)
-replaces it with a *local* per-parameter proxy mapped through a per-layer-type
-logistic to a parameter-specific exponent `p_{t,l}`.
+with `q_t = step/total_steps`, `τ = w = 0.04`). **DynMuon-Route** (this repo, the
+`schedule_modulated` router) keeps that time arc but **nudges each layer** by how
+its gradient geometry deviates from a typical value:
+
+```
+p_{t,l} = clip( p_t  +  beta · (proxy_l − ref) ,  −0.25, 1.0 )
+```
+
+With the stable-rank proxy, a layer whose gradient is *more anisotropic than `ref`*
+is pushed toward negative p (suppress outlier directions); a *more isotropic* layer
+is pushed up. This preserves the early-`p≈1` acquisition phase the schedule provides
+while adding per-layer adaptivity. The pure-logistic modes (`stable_rank`/`snr`/
+`alignment`, no time schedule) are also available for ablation.
+
+**Calibrate before long runs:** `python experiments/probe_proxies.py` runs a short
+trajectory and prints the per-layer-type proxy distributions and suggested
+`ref`/`beta` (and `mu`/`omega`). Routing proxies are raw and layer-local.
 
 ## Routing proxies
 

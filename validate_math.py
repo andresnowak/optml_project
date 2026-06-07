@@ -150,6 +150,36 @@ def test_fixed_mode_constant_exponent(fixed_p, name):
         assert torch.allclose(sv, torch.ones_like(sv), atol=1e-6)
 
 
+def test_schedule_modulated_reduces_to_schedule_when_beta_zero():
+    """schedule_modulated with beta=0 equals the plain global schedule; with
+    beta>0 it deviates per layer but stays within [p_min, p_max]."""
+    torch.manual_seed(3)
+    g = torch.randn(10, 16)
+
+    def run_p(beta):
+        w = torch.zeros(10, 16, requires_grad=True)
+        opt = DynMuonRoute([w], routing_mode="schedule_modulated", compute_mode="ns",
+                           beta=beta, ref=2.5, modulate_metric="stable_rank",
+                           total_steps=8, adjust_lr_fn=None)
+        ps = []
+        for _ in range(4):
+            w.grad = g.clone()
+            opt.step()
+            ps.append(opt.state[w]["last_p"])
+        return ps
+
+    # Reference schedule values for steps 0..3.
+    sched = DynMuonRoute([torch.zeros(2, 2, requires_grad=True)],
+                         routing_mode="global_schedule", total_steps=8)
+    sched_vals = []
+    for _ in range(4):
+        sched_vals.append(sched._p_schedule(sched.param_groups[0]))
+        sched._step_count += 1
+
+    assert all(abs(a - b) < 1e-6 for a, b in zip(run_p(0.0), sched_vals))   # beta=0 == schedule
+    assert all(-0.25 - 1e-9 <= p <= 1.0 + 1e-9 for p in run_p(0.2))         # beta>0 in range
+
+
 def test_global_schedule_anneals():
     """p_t runs 1.0 -> -0.25 across total_steps."""
     w = torch.zeros(6, 8, requires_grad=True)

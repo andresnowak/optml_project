@@ -37,7 +37,7 @@ def main() -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
 
     runs = {}
-    for mode in ("global_schedule", "stable_rank"):
+    for mode in ("global_schedule", "schedule_modulated"):
         cfg = load_config(args.config, {"model": args.model, "max_steps": args.max_steps,
                                         "routing_mode": mode})
         print(f"\n=== training routing_mode={mode} ===")

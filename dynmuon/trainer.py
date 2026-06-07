@@ -111,15 +111,20 @@ def build_optimizers(model: GPT, cfg: dict):
         groups = {"attn": [], "mlp": [], "other": []}
 
     routing_mode = cfg["routing_mode"]
-    # Per-(routing_mode, layer_type) logistic params; routers only.
+    # Per-(routing_mode, layer_type) routing params (mu/omega for the logistic
+    # modes, ref for schedule_modulated); plus mode-level beta/metric.
     route_mode = cfg.get("route", {}).get(routing_mode, {})
-    fallback = route_mode.get("default", {"mu": 0.0, "omega": 1.0})
+    default_lt = route_mode.get("default", {})
+
+    def _lt(lt: str, key: str, dflt: float) -> float:
+        return route_mode.get(lt, default_lt).get(key, dflt)
+
     param_groups = [
-        {"params": params,
-         "mu": route_mode.get(lt, fallback)["mu"],
-         "omega": route_mode.get(lt, fallback)["omega"]}
+        {"params": params, "mu": _lt(lt, "mu", 0.0),
+         "omega": _lt(lt, "omega", 1.0), "ref": _lt(lt, "ref", 0.0)}
         for lt, params in groups.items() if params
     ]
+    needs_schedule = routing_mode in ("global_schedule", "schedule_modulated")
     dynmuon = DynMuonRoute(
         param_groups,
         lr=cfg["muon_lr"],
@@ -130,10 +135,12 @@ def build_optimizers(model: GPT, cfg: dict):
         ns_variant=cfg.get("ns_variant", "quintic"),
         ns_steps=cfg.get("ns_steps", 5),
         adjust_lr_fn=cfg.get("adjust_lr_fn", "spectral_norm"),
+        beta=route_mode.get("beta", 0.1),
+        modulate_metric=route_mode.get("metric", "stable_rank"),
         fixed_p=cfg.get("fixed_p", 0.0),
         tau_ratio=cfg.get("tau_ratio", 0.04),
         width_ratio=cfg.get("width_ratio", 0.04),
-        total_steps=cfg["max_steps"] if routing_mode == "global_schedule" else None,
+        total_steps=cfg["max_steps"] if needs_schedule else None,
     ) if param_groups else None
     adamw = torch.optim.AdamW(
         adam_params, lr=cfg["adam_lr"], betas=(0.9, 0.95),

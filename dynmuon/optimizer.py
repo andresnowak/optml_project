@@ -39,7 +39,10 @@ from typing import Any
 
 import torch
 
-ROUTING_MODES = ("fixed", "global_schedule", "stable_rank", "snr", "alignment")
+ROUTING_MODES = (
+    "fixed", "global_schedule", "schedule_modulated", "stable_rank", "snr", "alignment",
+)
+PROXY_METRICS = ("stable_rank", "snr", "alignment")
 COMPUTE_MODES = ("svd", "ns")
 NS_VARIANTS = ("quintic", "cubic")
 
@@ -117,10 +120,26 @@ def logistic_route(x: float, p_min: float, p_max: float, mu: float, omega: float
 class DynMuonRoute(torch.optim.Optimizer):
     """Muon with dynamic layer-wise spectral-exponent routing.
 
-    Routing parameters ``mu`` / ``omega`` are per-param-group so Attention, MLP
-    and other matrices can carry distinct logistic curves (the trainer builds one
-    group per layer type). 1-D parameters (biases, norms, embeddings) must NOT be
-    passed here — route them through AdamW.
+    Routing modes (set ``routing_mode``):
+      * ``fixed``              — constant ``fixed_p`` (p=0 Muon, p=1 SGD).
+      * ``global_schedule``    — the reference DynMuon logistic time schedule
+                                 ``p_t : 1 → -0.25``, identical for every layer.
+      * ``schedule_modulated`` — **the router.** Follow the same global time
+                                 schedule, but nudge each layer by how its
+                                 gradient geometry deviates from a typical value:
+                                     p_{t,l} = clip( p_t  +  beta·(proxy_l − ref_l) )
+                                 With the stable-rank proxy, a layer whose gradient
+                                 is *more anisotropic than typical* (proxy < ref) is
+                                 pushed toward negative p (suppress outliers); a
+                                 *more isotropic* layer is pushed up. ``ref`` is
+                                 per-layer-type; ``beta`` is the (shared) gain.
+      * ``stable_rank`` / ``snr`` / ``alignment`` — map the proxy straight to p
+        through a per-layer-type logistic (``mu``, ``omega``); no time schedule.
+
+    Per-param-group knobs (``mu``, ``omega``, ``ref``) let Attention, MLP and other
+    matrices carry distinct routing; the trainer builds one group per layer type.
+    1-D parameters (biases, norms, embeddings) must NOT be passed here — route them
+    through AdamW.
     """
 
     def __init__(
@@ -139,6 +158,9 @@ class DynMuonRoute(torch.optim.Optimizer):
         p_max: float = 1.0,
         mu: float = 0.0,
         omega: float = 1.0,
+        ref: float = 0.0,
+        beta: float = 0.1,
+        modulate_metric: str = "stable_rank",
         fixed_p: float = 0.0,
         tau_ratio: float = 0.04,
         width_ratio: float = 0.04,
@@ -150,29 +172,41 @@ class DynMuonRoute(torch.optim.Optimizer):
             raise ValueError(f"compute_mode must be one of {COMPUTE_MODES}, got {compute_mode}")
         if ns_variant not in NS_VARIANTS:
             raise ValueError(f"ns_variant must be one of {NS_VARIANTS}, got {ns_variant}")
+        if modulate_metric not in PROXY_METRICS:
+            raise ValueError(f"modulate_metric must be one of {PROXY_METRICS}, got {modulate_metric}")
         if adjust_lr_fn not in (None, "spectral_norm"):
             raise ValueError(f"adjust_lr_fn must be None or 'spectral_norm', got {adjust_lr_fn}")
-        if routing_mode == "global_schedule" and not total_steps:
-            raise ValueError("routing_mode='global_schedule' requires total_steps > 0")
+        if routing_mode in ("global_schedule", "schedule_modulated") and not total_steps:
+            raise ValueError(f"routing_mode={routing_mode!r} requires total_steps > 0")
         defaults = dict(
             lr=lr, momentum=momentum, nesterov=nesterov, routing_mode=routing_mode,
             compute_mode=compute_mode, ns_variant=ns_variant, ns_steps=ns_steps, eps=eps,
             adjust_lr_fn=adjust_lr_fn, p_min=p_min, p_max=p_max, mu=mu, omega=omega,
+            ref=ref, beta=beta, modulate_metric=modulate_metric,
             fixed_p=fixed_p, tau_ratio=tau_ratio, width_ratio=width_ratio,
             total_steps=total_steps,
         )
         super().__init__(params, defaults)
         self._step_count = 0
 
+    def _p_schedule(self, group: dict) -> float:
+        """Reference DynMuon logistic time schedule p_t : p_max → p_min."""
+        q_t = self._step_count / max(1, group["total_steps"])
+        u = (q_t - group["tau_ratio"]) / max(group["width_ratio"], 1e-8)
+        anneal = 1.0 / (1.0 + math.exp(max(-60.0, min(60.0, u))))
+        return group["p_min"] + (group["p_max"] - group["p_min"]) * anneal
+
     def _select_p(self, group: dict, x: float | None) -> float:
-        """Fixed exponent, global logistic time schedule, or routed proxy mapping."""
-        if group["routing_mode"] == "fixed":
+        """Map the active routing mode (and proxy ``x``) to a spectral exponent."""
+        mode = group["routing_mode"]
+        if mode == "fixed":
             return group["fixed_p"]              # 0.0 = Muon, 1.0 = SGD
-        if group["routing_mode"] == "global_schedule":
-            q_t = self._step_count / max(1, group["total_steps"])
-            u = (q_t - group["tau_ratio"]) / max(group["width_ratio"], 1e-8)
-            anneal = 1.0 / (1.0 + math.exp(max(-60.0, min(60.0, u))))
-            return group["p_min"] + (group["p_max"] - group["p_min"]) * anneal
+        if mode == "global_schedule":
+            return self._p_schedule(group)
+        if mode == "schedule_modulated":
+            # Global time arc + per-layer geometry nudge, clipped to [p_min, p_max].
+            p = self._p_schedule(group) + group["beta"] * (x - group["ref"])
+            return max(group["p_min"], min(group["p_max"], p))
         return logistic_route(x, group["p_min"], group["p_max"], group["mu"], group["omega"])
 
     @torch.no_grad()
@@ -237,16 +271,17 @@ class DynMuonRoute(torch.optim.Optimizer):
             Y_mu = (quintic_newton_schulz(X_n) if group["ns_variant"] == "quintic"
                     else newton_schulz(X_n, group["ns_steps"]))
 
-        # -- routing proxies -----------------------------------------------
-        d = X_n.shape[0]                                  # min(rows, cols) after orientation
+        # -- routing proxies (raw, layer-local) ----------------------------
         sr = 1.0 / (lam_max + eps)                        # ‖M‖_F²/σ_max² = 1/λ_max(A) ∈ [1, d]
         gamma = float((fro_M / (torch.linalg.norm(G2 - M2) + eps)).item())
         alpha = float((torch.sum(W2 * M2).abs() / (torch.linalg.norm(W2) * fro_M + eps)).item())
+        proxies = {"stable_rank": sr, "snr": gamma, "alignment": alpha}
 
-        # Stable rank is routed in normalized form sr/d ∈ (0, 1] so that one set of
-        # (mu, omega) works at any model width; the raw sr is kept for logging.
+        # The proxy that feeds routing: the chosen metric for schedule_modulated,
+        # else the metric named by the routing mode (fixed/global ignore it).
         mode = group["routing_mode"]
-        x = (sr / d) if mode == "stable_rank" else gamma if mode == "snr" else alpha if mode == "alignment" else None
+        metric = group["modulate_metric"] if mode == "schedule_modulated" else mode
+        x = proxies.get(metric)
         p_exp = self._select_p(group, x)
 
         # -- shape D(p) = U Σ^p Vᵀ -----------------------------------------

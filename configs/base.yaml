@@ -7,8 +7,8 @@ mlp: gelu                  # gelu | gated
 data_dir: data/wikitext103
 
 # method
-matrix_optimizer: dynmuon  # dynmuon (DynMuonRoute on matrices) | adamw (AdamW baseline)
-routing_mode: stable_rank  # fixed | global_schedule | stable_rank | snr | alignment
+matrix_optimizer: dynmuon       # dynmuon (DynMuonRoute on matrices) | adamw (baseline)
+routing_mode: schedule_modulated  # fixed | global_schedule | schedule_modulated | stable_rank | snr | alignment
 fixed_p: 0.0               # used when routing_mode=fixed (0.0 = Muon, 1.0 = SGD)
 compute_mode: ns           # ns (fast Newton-Schulz/eigen) | svd (exact)
 ns_variant: quintic        # quintic (reference DynMuon) | cubic (textbook)
@@ -31,7 +31,7 @@ grad_clip: 1.0
 
 # logging / eval
 log_every: 10
-eval_iters: 50
+eval_iters: 20
 wandb: false
 wandb_project: dynmuon-route
 wandb_entity: null         # null -> use WANDB_ENTITY env / default team
@@ -39,18 +39,28 @@ wandb_entity: null         # null -> use WANDB_ENTITY env / default team
 # experiment 2 — anisotropic noise injection (0 disables)
 noise_lambda: 0.0
 
-# Per-(routing_mode, layer_type) routing logistic:
-#   p = p_min + (p_max-p_min) / (1 + exp(-(x - mu)/omega))
-# Proxies are scale-invariant (stable rank is normalized by d), so these values
-# are model-agnostic. omega > 0 => p increases with x; omega < 0 => decreases.
-# Per layer type we give attention a lower center than MLP so attention resists
-# negative p (stays p >= 0) while MLP routes toward p = -0.25 at low stable rank.
+# Routing parameters. Proxies are RAW and layer-local; calibrate from a short
+# `python experiments/probe_proxies.py` run (it prints suggested values).
+#
+# schedule_modulated (the router): p_{t,l} = clip( p_schedule(t) + beta*(sr - ref) ).
+#   `ref` = the typical stable rank; a layer more anisotropic than ref (sr < ref)
+#   is pushed negative, a more isotropic one is pushed up. Keep `ref` EQUAL across
+#   layer types to get cross-layer separation; give per-type refs to instead
+#   modulate each type around its own baseline. `beta` is the (shared) gain.
 route:
-  stable_rank:               # x = sr/d in (0, 1]; high => isotropic => p >= 0
-    attn:    {mu: 0.35, omega: 0.12}
-    mlp:     {mu: 0.60, omega: 0.12}
-    default: {mu: 0.50, omega: 0.12}
-  snr:                       # x = gamma in [0, inf); low (noisy) => p >= 0 (omega < 0)
+  schedule_modulated:
+    metric: stable_rank        # stable_rank | snr | alignment
+    beta: 0.10                 # p units per unit proxy deviation from ref
+    attn:    {ref: 2.5}
+    mlp:     {ref: 2.5}
+    default: {ref: 2.5}
+  # Logistic modes (no time schedule): p = p_min + (p_max-p_min)/(1+exp(-(x-mu)/omega)).
+  # omega > 0 => p increases with x; omega < 0 => decreases (SNR).
+  stable_rank:                 # x = raw stable rank, ~O(1-5) for transformer grads
+    attn:    {mu: 2.0, omega: 0.8}
+    mlp:     {mu: 3.0, omega: 0.8}
+    default: {mu: 2.5, omega: 0.8}
+  snr:                         # x = gamma; low (noisy) => p >= 0  (omega < 0)
     default: {mu: 1.5, omega: -0.5}
-  alignment:                 # x = alpha in [0, 1]; high => p -> 1
+  alignment:                   # x = alpha in [0, 1]; high => p -> 1
     default: {mu: 0.3, omega: 0.1}
