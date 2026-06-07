@@ -199,6 +199,12 @@ UV_SYNC=0 scripts/run_job.sh single --config configs/small.yaml --train-steps 20
 UV_SYNC_ARGS="--locked --extra dev" scripts/run_job.sh sanity
 ```
 
+By default, `run_job.sh` submits with RunAI's `--run-as-user`, so files written on
+the home PVC should be owned by your cluster user rather than by root inside the
+container. If your RunAI setup needs explicit numeric IDs instead, set both
+`LDAP_UID` and `LDAP_GID`; the script will use
+`--run-as-uid ${LDAP_UID} --run-as-gid ${LDAP_GID}` in place of `--run-as-user`.
+
 The most useful knobs are `IMAGE`/`RUNAI_IMAGE`, `GPUS`, `CLUSTER_HOME`,
 `PROJECT_DIR`, `REMOTE_USER`, `NODE_POOLS`, `LDAP_UID`/`LDAP_GID`, `UV_SYNC`,
 `UV_SYNC_ARGS`, `HF_TOKEN`, and the `WANDB_*` variables. If `uv sync --locked`
