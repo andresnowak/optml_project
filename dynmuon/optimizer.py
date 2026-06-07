@@ -160,6 +160,8 @@ class DynMuonRoute(torch.optim.Optimizer):
         omega: float = 1.0,
         ref: float = 0.0,
         beta: float = 0.1,
+        dynamic_ref: bool = False,
+        ref_decay: float = 0.9,
         modulate_metric: str = "stable_rank",
         fixed_p: float = 0.0,
         tau_ratio: float = 0.04,
@@ -182,12 +184,17 @@ class DynMuonRoute(torch.optim.Optimizer):
             lr=lr, momentum=momentum, nesterov=nesterov, routing_mode=routing_mode,
             compute_mode=compute_mode, ns_variant=ns_variant, ns_steps=ns_steps, eps=eps,
             adjust_lr_fn=adjust_lr_fn, p_min=p_min, p_max=p_max, mu=mu, omega=omega,
-            ref=ref, beta=beta, modulate_metric=modulate_metric,
+            ref=ref, beta=beta, dynamic_ref=dynamic_ref, ref_decay=ref_decay,
+            modulate_metric=modulate_metric,
             fixed_p=fixed_p, tau_ratio=tau_ratio, width_ratio=width_ratio,
             total_steps=total_steps,
         )
         super().__init__(params, defaults)
         self._step_count = 0
+        # Running cross-layer mean of the routing proxy (for dynamic_ref): lets
+        # the schedule own the global/temporal trend while the router responds
+        # only to each layer's deviation from the network average.
+        self._proxy_ema: float | None = None
 
     def _p_schedule(self, group: dict) -> float:
         """Reference DynMuon logistic time schedule p_t : p_max → p_min."""
@@ -205,7 +212,11 @@ class DynMuonRoute(torch.optim.Optimizer):
             return self._p_schedule(group)
         if mode == "schedule_modulated":
             # Global time arc + per-layer geometry nudge, clipped to [p_min, p_max].
-            p = self._p_schedule(group) + group["beta"] * (x - group["ref"])
+            # dynamic_ref: nudge relative to the running cross-layer mean (removes
+            # the global temporal trend, leaving the per-layer deviation).
+            ref = (self._proxy_ema if (group["dynamic_ref"] and self._proxy_ema is not None)
+                   else group["ref"])
+            p = self._p_schedule(group) + group["beta"] * (x - ref)
             return max(group["p_min"], min(group["p_max"], p))
         return logistic_route(x, group["p_min"], group["p_max"], group["mu"], group["omega"])
 
@@ -221,14 +232,24 @@ class DynMuonRoute(torch.optim.Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+        step_proxies = []
         for group in self.param_groups:
             for p in group["params"]:
                 if p.grad is not None:
-                    self._update_param(p, group, noise_hook)
+                    x = self._update_param(p, group, noise_hook)
+                    if x is not None:
+                        step_proxies.append(x)
+        # Update the running cross-layer proxy mean (used by dynamic_ref next step).
+        if step_proxies:
+            m = sum(step_proxies) / len(step_proxies)
+            decay = self.param_groups[0]["ref_decay"]
+            self._proxy_ema = m if self._proxy_ema is None else decay * self._proxy_ema + (1 - decay) * m
         self._step_count += 1
         return loss
 
-    def _update_param(self, p, group, noise_hook) -> None:
+    def _update_param(self, p, group, noise_hook) -> float | None:
+        """Apply the shaped update to ``p``; return the routing proxy value (for
+        the dynamic cross-layer mean), or None when no proxy is used."""
         eps = group["eps"]
         G = p.grad
         orig_shape = G.shape
@@ -256,7 +277,7 @@ class DynMuonRoute(torch.optim.Optimizer):
         if fro_M <= eps:
             state.update(last_p=float("nan"), last_sr=float("nan"),
                          last_gamma=float("nan"), last_alpha=float("nan"))
-            return
+            return None
         X_n = M2 / fro_M
 
         # Spectral decomposition (needed for both the proxy and the shaping).
@@ -298,3 +319,4 @@ class DynMuonRoute(torch.optim.Optimizer):
 
         state.update(last_p=float(p_exp), last_sr=float(sr),
                      last_gamma=float(gamma), last_alpha=float(alpha))
+        return x

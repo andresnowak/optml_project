@@ -50,16 +50,24 @@ noise_lambda: 0.0
 route:
   schedule_modulated:
     metric: stable_rank        # stable_rank | snr | alignment
-    beta: 0.10                 # p units per unit proxy deviation from ref
-    attn:    {ref: 2.5}
-    mlp:     {ref: 2.5}
-    default: {ref: 2.5}
+    # The 124M probe showed stable rank is dominated by a global temporal rise
+    # (~1 -> ~4), with little attn/mlp gap. dynamic_ref centers the nudge on the
+    # running cross-layer mean so the schedule owns that trend and the router only
+    # responds to per-layer deviation. (alpha separates layers more than sr — try
+    # metric: alignment if you want a stronger attn-vs-mlp signal.)
+    dynamic_ref: true
+    ref_decay: 0.9
+    beta: 0.5                  # p units per unit proxy deviation from the mean
+    attn:    {ref: 1.95}       # seed/fallback used only if dynamic_ref is off
+    mlp:     {ref: 1.95}
+    default: {ref: 1.95}
   # Logistic modes (no time schedule): p = p_min + (p_max-p_min)/(1+exp(-(x-mu)/omega)).
-  # omega > 0 => p increases with x; omega < 0 => decreases (SNR).
+  # omega > 0 => p increases with x; omega < 0 => decreases (SNR). Calibrated from
+  # the 124M probe (median sr ~1.8 attn / ~2.1 mlp, quarter-spread ~0.86).
   stable_rank:                 # x = raw stable rank, ~O(1-5) for transformer grads
-    attn:    {mu: 2.0, omega: 0.8}
-    mlp:     {mu: 3.0, omega: 0.8}
-    default: {mu: 2.5, omega: 0.8}
+    attn:    {mu: 1.80, omega: 0.86}
+    mlp:     {mu: 2.08, omega: 0.86}
+    default: {mu: 1.95, omega: 0.86}
   snr:                         # x = gamma; low (noisy) => p >= 0  (omega < 0)
     default: {mu: 1.5, omega: -0.5}
   alignment:                   # x = alpha in [0, 1]; high => p -> 1

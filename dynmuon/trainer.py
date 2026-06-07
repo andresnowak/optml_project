@@ -136,6 +136,8 @@ def build_optimizers(model: GPT, cfg: dict):
         ns_steps=cfg.get("ns_steps", 5),
         adjust_lr_fn=cfg.get("adjust_lr_fn", "spectral_norm"),
         beta=route_mode.get("beta", 0.1),
+        dynamic_ref=route_mode.get("dynamic_ref", False),
+        ref_decay=route_mode.get("ref_decay", 0.9),
         modulate_metric=route_mode.get("metric", "stable_rank"),
         fixed_p=cfg.get("fixed_p", 0.0),
         tau_ratio=cfg.get("tau_ratio", 0.04),
