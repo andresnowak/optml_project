@@ -37,7 +37,7 @@ GPUS="${GPUS:-1}"
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${PROJECT_DIR:-$(cd "${_SELF_DIR}/.." && pwd)}"
 ENTRY_SH="${PROJECT_DIR}/scripts/container_entry.sh"
-STAMP="$(date +%Y%m%d-%H%M%S)"
+STAMP="$(date +%Y%m%d-%H%M%S)-${RANDOM}"   # random suffix avoids name clashes on rapid submits
 
 # Mount the home PVC so the repo + data + wandb cache persist and are visible
 # inside the pod at the same absolute path as on the submit node.

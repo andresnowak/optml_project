@@ -31,6 +31,9 @@ def main() -> None:
     ap.add_argument("--config", default="configs/exp1_spectral.yaml")
     ap.add_argument("--model", choices=["small", "gpt124m"])
     ap.add_argument("--max-steps", dest="max_steps", type=int)
+    ap.add_argument("--modulate-metric", dest="modulate_metric",
+                    choices=["stable_rank", "snr", "alignment"])
+    ap.add_argument("--beta", type=float)
     ap.add_argument("--wandb", action="store_true")
     ap.add_argument("--wandb-group", dest="wandb_group", default="exp1_spectral")
     args = ap.parse_args()
@@ -39,7 +42,8 @@ def main() -> None:
     runs = {}
     for mode in ("global_schedule", "schedule_modulated"):
         cfg = load_config(args.config, {"model": args.model, "max_steps": args.max_steps,
-                                        "routing_mode": mode})
+                                        "routing_mode": mode,
+                                        "modulate_metric": args.modulate_metric, "beta": args.beta})
         print(f"\n=== training routing_mode={mode} ===")
         logger, mem, wb = build_arm_logger(cfg, args.wandb, f"exp1_{mode}", args.wandb_group)
         train(cfg, logger=logger)

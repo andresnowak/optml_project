@@ -103,6 +103,24 @@ scripts/
 
 Run any single method: `python train.py --config configs/<method>.yaml [--model small]`.
 
+### Ablation knobs & sweeps
+
+`train.py` exposes the router knobs as CLI overrides (each falls back to the YAML
+when omitted): `--seed`, `--mlp {gelu,gated}`, `--routing-mode`, `--compute-mode`,
+`--ns-variant`, `--max-steps`, `--muon-lr`, `--beta`, `--modulate-metric`,
+`--dynamic-ref/--no-dynamic-ref`, `--noise-lambda`, `--run-name`, `--wandb-group`.
+
+`scripts/sweep.sh` submits a one-parameter sweep as separate W&B runs in one group:
+
+```bash
+scripts/sweep.sh beta_sweep --beta 0,0.25,0.5,1.0 --config configs/route.yaml --model gpt124m
+scripts/sweep.sh seed_route --seed 0,1,2          --config configs/route.yaml --model gpt124m
+scripts/sweep.sh proxy --modulate-metric stable_rank,alignment --config configs/route.yaml --model gpt124m
+```
+
+For boolean knobs (e.g. `--dynamic-ref` vs `--no-dynamic-ref`) just submit the two
+`single` runs directly with a shared `--wandb-group`.
+
 All customization is done through `configs/*.yaml`; a config `extends:` another and
 overrides selected keys. CLI flags (e.g. `--routing-mode`, `--max-steps`) override
 the YAML for ad-hoc runs.
