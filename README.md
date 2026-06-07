@@ -3,32 +3,44 @@
 Dynamic **layer-wise spectral-exponent routing** for the Muon optimizer, built on
 top of the [DynMuon](https://github.com/fzwark/DynMuon) baseline.
 
-Muon-family methods shape the momentum-averaged gradient `M = U Σ Vᵀ` with a
-spectral operator `D(p) = U Σ^p Vᵀ`:
+## Intuition
 
-- `p = 1.0` → SGD (raw singular values)
-- `p = 0.0` → Muon (polar factor, all singular values → 1)
-- `p = -0.25` → late-stage outlier suppression (strength reallocated to flat directions)
+Muon-style updates reshape the momentum gradient's singular values with one knob `p`,
+via `D(p) = U Σ^p Vᵀ`:
 
-**DynMuon** drives a single global logistic *time* schedule `p_t : 1 → -0.25` for
-every layer (reference `get_p`: `p = p_min + (p_max-p_min)/(1+exp((q_t-τ)/w))`,
-with `q_t = step/total_steps`, `τ = w = 0.04`). **DynMuon-Route** (this repo, the
-`schedule_modulated` router) keeps that time arc but **nudges each layer** by how
-its gradient geometry deviates from a typical value:
+- `p = 1` → keep raw curvature (SGD-like; good for fast early progress)
+- `p = 0` → flatten all singular values to 1 (Muon)
+- `p = -0.25` → *suppress* the dominant directions (good late, when the top
+  directions are mostly noise / curvature traps)
+
+**DynMuon** anneals one shared clock `p_t : 1 → -0.25` over training: trust curvature
+early, suppress it late. **DynMuon-Route** keeps that clock but lets each layer lean:
 
 ```
-p_{t,l} = clip( p_t  +  beta · (proxy_l − ref) ,  −0.25, 1.0 )
+p_{t,l} = clip( p_t  +  beta · (gₗ − ḡₜ) ,  −0.25, 1.0 )
+          └──┬──┘        └────┬────┘
+        shared clock      personal lean
 ```
 
-With the stable-rank proxy, a layer whose gradient is *more anisotropic than `ref`*
-is pushed toward negative p (suppress outlier directions); a *more isotropic* layer
-is pushed up. This preserves the early-`p≈1` acquisition phase the schedule provides
-while adding per-layer adaptivity. The pure-logistic modes (`stable_rank`/`snr`/
-`alignment`, no time schedule) are also available for ablation.
+where `gₗ` is layer `l`'s gradient concentration (stable rank) and `ḡₜ` is the
+network's **running average** of it. In one breath: *everyone follows the same clock,
+but a layer whose gradient is more lopsided than its peers right now leans `p` down
+(suppress that direction harder); a more balanced layer leans up.*
 
-**Calibrate before long runs:** `python experiments/probe_proxies.py` runs a short
-trajectory and prints the per-layer-type proxy distributions and suggested
-`ref`/`beta` (and `mu`/`omega`). Routing proxies are raw and layer-local.
+Why the **deviation** `gₗ − ḡₜ` and not `gₗ` itself: stable rank drifts globally over
+training (~1 → 4), so a layer's absolute value mostly encodes *what time it is* — which
+the clock already captures. Subtracting the running mean removes that shared trend and
+leaves the only genuinely per-layer signal. So the **clock carries what's universal
+(time); the lean carries what's local (geometry).**
+
+Where it should shine (Exp 2): inject anisotropic noise into one layer → its stable
+rank collapses below the network average → the lean drives that layer's `p` negative
+and suppresses the spike. A fixed clock has no feedback to react; a deviation-driven
+lean does.
+
+**Calibrate before long runs:** `python experiments/probe_proxies.py` prints the
+per-layer-type proxy distributions and suggested `ref`/`beta`. The pure-logistic modes
+(`stable_rank`/`snr`/`alignment`, no clock) are available for ablation.
 
 ## Routing proxies
 
