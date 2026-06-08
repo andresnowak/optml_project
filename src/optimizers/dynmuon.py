@@ -138,8 +138,8 @@ class DynMuonRoute(torch.optim.Optimizer):
 
     Per-param-group knobs (``mu``, ``omega``, ``ref``) let Attention, MLP and other
     matrices carry distinct routing; the trainer builds one group per layer type.
-    1-D parameters (biases, norms, embeddings) must NOT be passed here — route them
-    through AdamW.
+    Biases, norm gains, and embeddings must NOT be passed here — route them through
+    AdamW.
     """
 
     def __init__(

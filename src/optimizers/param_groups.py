@@ -10,7 +10,8 @@ from torch import nn
 
 @dataclass
 class ParamSplit:
-    adamw: list[nn.Parameter]
+    embed: list[nn.Parameter]
+    scalar: list[nn.Parameter]
     matrix: dict[str, list[nn.Parameter]]
 
 
@@ -26,7 +27,8 @@ def split_gpt_params(model: nn.Module, *, routed: bool) -> ParamSplit:
     """Split GPT params into AdamW fallback and matrix-optimizer groups."""
     seen: set[int] = set()
     assigned: set[int] = set()
-    adamw: list[nn.Parameter] = []
+    embed: list[nn.Parameter] = []
+    scalar: list[nn.Parameter] = []
     matrix: dict[str, list[nn.Parameter]] = {"matrix": []} if not routed else {"attn": [], "mlp": [], "other": []}
 
     named = list(model.named_parameters())
@@ -35,8 +37,10 @@ def split_gpt_params(model: nn.Module, *, routed: bool) -> ParamSplit:
             continue
         seen.add(id(p))
         is_embedding = name == "embed.weight"
-        if p.ndim < 2 or is_embedding:
-            adamw.append(p)
+        if is_embedding:
+            embed.append(p)
+        elif p.ndim < 2:
+            scalar.append(p)
         elif routed:
             matrix[layer_type(name)].append(p)
         else:
@@ -49,4 +53,4 @@ def split_gpt_params(model: nn.Module, *, routed: bool) -> ParamSplit:
         extra = assigned - expected
         raise RuntimeError(f"parameter split mismatch: missing={len(missing)} extra={len(extra)}")
 
-    return ParamSplit(adamw=adamw, matrix={k: v for k, v in matrix.items() if v})
+    return ParamSplit(embed=embed, scalar=scalar, matrix={k: v for k, v in matrix.items() if v})

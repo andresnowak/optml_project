@@ -102,7 +102,7 @@ data/
 
 | config | method | how |
 |--------|--------|-----|
-| `configs/adamw.yaml` | AdamW | `matrix_optimizer: adamw` (all params to AdamW) |
+| `configs/adamw.yaml` | AdamW | `matrix_optimizer: adamw` (matrix params use `weight_decay`; aux params use `scalar_weight_decay`) |
 | `configs/muon.yaml` | Muon | `matrix_optimizer: muon` (Track-3-style Muon) |
 | `configs/dynmuon.yaml` | DynMuon | `routing_mode: global_schedule` (logistic p_t) |
 | `configs/route.yaml` | **DynMuon-Route** | `routing_mode: schedule_modulated` (per-layer router) |

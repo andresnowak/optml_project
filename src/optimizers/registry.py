@@ -10,15 +10,37 @@ from .muon import Muon
 from .param_groups import split_gpt_params
 
 
+def _adamw_aux_groups(split, cfg: dict) -> list[dict]:
+    params = split.embed + split.scalar
+    if not params:
+        return []
+    lr = cfg["adam_lr"]
+    return [{
+        "params": params,
+        "name": "aux",
+        "lr": lr,
+        "initial_lr": lr,
+        "weight_decay": cfg.get("scalar_weight_decay", 0.0),
+    }]
+
+
 def build_optimizers(model: nn.Module, cfg: dict):
     matrix_optimizer = cfg.get("matrix_optimizer", "dynmuon")
     if matrix_optimizer == "adamw":
-        return None, torch.optim.AdamW(
-            model.parameters(),
-            lr=cfg["adam_lr"],
-            betas=(0.9, 0.95),
-            weight_decay=cfg.get("weight_decay", 0.1),
-        )
+        split = split_gpt_params(model, routed=False)
+        matrix_params = sorted(split.matrix.get("matrix", []), key=lambda p: p.size(), reverse=True)
+        param_groups = []
+        if matrix_params:
+            lr = cfg["adam_lr"]
+            param_groups.append({
+                "params": matrix_params,
+                "name": "matrix",
+                "lr": lr,
+                "initial_lr": lr,
+                "weight_decay": cfg.get("weight_decay", 0.1),
+            })
+        param_groups.extend(_adamw_aux_groups(split, cfg))
+        return None, torch.optim.AdamW(param_groups, betas=(0.9, 0.95))
 
     if matrix_optimizer == "muon":
         split = split_gpt_params(model, routed=False)
@@ -32,12 +54,8 @@ def build_optimizers(model: nn.Module, cfg: dict):
             ns_steps=cfg.get("ns_steps", 12),
             adjust_lr_fn=cfg.get("adjust_lr_fn", "spectral_norm"),
         )
-        adamw = torch.optim.AdamW(
-            split.adamw,
-            lr=cfg["adam_lr"],
-            betas=(0.9, 0.95),
-            weight_decay=cfg.get("scalar_weight_decay", 0.0),
-        ) if split.adamw else None
+        aux_groups = _adamw_aux_groups(split, cfg)
+        adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None
         return muon, adamw
 
     routed = cfg.get("routing_mode") == "schedule_modulated"
@@ -80,10 +98,6 @@ def build_optimizers(model: nn.Module, cfg: dict):
         width_ratio=cfg.get("width_ratio", 0.04),
         total_steps=cfg["train_steps"] if needs_schedule else None,
     ) if param_groups else None
-    adamw = torch.optim.AdamW(
-        split.adamw,
-        lr=cfg["adam_lr"],
-        betas=(0.9, 0.95),
-        weight_decay=cfg.get("scalar_weight_decay", 0.0),
-    ) if split.adamw else None
+    aux_groups = _adamw_aux_groups(split, cfg)
+    adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None
     return dynmuon, adamw
