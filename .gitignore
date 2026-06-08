@@ -44,3 +44,7 @@ mlruns/
 .DS_Store
 # experiment outputs
 results/
+
+# Ignore the Scope of the project
+SCOPE.md
+report/
