@@ -220,6 +220,69 @@ def log_routing(model: GPT, dynmuon: DynMuonRoute | None, step: int, logger) -> 
     logger.log(payload, step=step)
 
 
+def _matrix_layer_type(name: str) -> str | None:
+    """Map GPT matrix parameter names to compact layer-type labels."""
+    if name == "embed.weight":
+        return "embed"
+    for suffix, layer_type in (
+        ("attn.q.weight", "attn.q"),
+        ("attn.k.weight", "attn.k"),
+        ("attn.v.weight", "attn.v"),
+        ("attn.proj.weight", "attn.proj"),
+        ("mlp.fc.weight", "mlp.fc"),
+        ("mlp.proj.weight", "mlp.proj"),
+    ):
+        if name.endswith(suffix):
+            return layer_type
+    return None
+
+
+@torch.no_grad()
+def log_relmuon_scales(model: GPT, step: int, logger, eps: float = 1e-8) -> None:
+    """Log RelMuon-log1p scale diagnostics grouped by layer type.
+
+    Muon's active update singular values are all ones. These diagnostics show how
+    far RelMuon's weight-spectrum scales move away from that reference.
+    """
+    if logger is None:
+        return
+    by_type: dict[str, list[torch.Tensor]] = {}
+    for name, p in model.named_parameters():
+        if p.ndim != 2:
+            continue
+        layer_type = _matrix_layer_type(name)
+        if layer_type is None:
+            continue
+        sv = torch.linalg.svdvals(p.detach().float())
+        raw_scales = torch.log1p(sv.clamp(min=0.0))
+        rms = torch.sqrt(torch.mean(raw_scales.square()))
+        scales = (raw_scales + eps) / (rms + eps)
+        by_type.setdefault(layer_type, []).append(scales)
+
+    payload = {}
+    all_scales = []
+    for layer_type, chunks in by_type.items():
+        scales = torch.cat(chunks)
+        all_scales.append(scales)
+        q = torch.quantile(scales, torch.tensor([0.1, 0.5, 0.9], device=scales.device))
+        prefix = f"relmuon/{layer_type}/scale"
+        payload[f"{prefix}/mean_abs_delta_from_one"] = (scales - 1.0).abs().mean().item()
+        payload[f"{prefix}/p10"] = q[0].item()
+        payload[f"{prefix}/median"] = q[1].item()
+        payload[f"{prefix}/p90"] = q[2].item()
+
+    if all_scales:
+        scales = torch.cat(all_scales)
+        q = torch.quantile(scales, torch.tensor([0.1, 0.5, 0.9], device=scales.device))
+        payload["relmuon/all/scale/mean_abs_delta_from_one"] = (scales - 1.0).abs().mean().item()
+        payload["relmuon/all/scale/p10"] = q[0].item()
+        payload["relmuon/all/scale/median"] = q[1].item()
+        payload["relmuon/all/scale/p90"] = q[2].item()
+
+    if payload:
+        logger.log(payload, step=step)
+
+
 @torch.no_grad()
 def estimate_loss(model, data, cfg, device, amp_ctx) -> tuple[float, int]:
     """Evaluate deterministic fixed-token validation loss."""
@@ -259,6 +322,8 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
     model_cfg = _model_config(cfg)
     model = GPT(model_cfg).to(device)
+    model.compile(dynamic=False)
+
     print(f"model: {model.num_params() / 1e6:.1f}M non-embedding params")
 
     data_dir = cfg.get("data_dir", "data/wikitext103")
@@ -382,6 +447,8 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     "lr": lr_used,
                     "tokens/train": completed_step * batch_tokens,
                 }, step=completed_step)
+            if cfg.get("matrix_optimizer") == "relmuon":
+                log_relmuon_scales(model, completed_step, logger, eps=cfg.get("relmuon_eps", 1e-8))
             log_routing(model, dynmuon, completed_step, logger)
 
         if _TERMINATE_REQUESTED:
