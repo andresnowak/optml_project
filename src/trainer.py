@@ -76,11 +76,14 @@ def lr_factor(step: int, warmup_steps: int, train_steps: int, min_lr_ratio: floa
         eta = (step + 1) / warmup_steps                         during warmup
         eta = min_lr_ratio + cosine_decay * (1 - min_lr_ratio)  after warmup
 
-    The final multiplier approaches ``min_lr_ratio`` rather than zero.
+    The last optimizer update (``step == train_steps - 1``) reaches
+    ``min_lr_ratio`` exactly.
     """
     if step < warmup_steps:
         return (step + 1) / max(1, warmup_steps)
-    progress = (step - warmup_steps) / max(1, train_steps - warmup_steps)
+
+    decay_steps = max(1, train_steps - warmup_steps - 1)
+    progress = (step - warmup_steps) / decay_steps
     cosine = 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
     return min_lr_ratio + cosine * (1 - min_lr_ratio)
 
@@ -237,6 +240,8 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
         if clip:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+        primary_optimizer = dynmuon if dynmuon is not None else adamw
+        lr_used = primary_optimizer.param_groups[0]["lr"] if primary_optimizer is not None else 0.0
         if dynmuon is not None:
             dynmuon.step(noise_hook=noise_hook)
         if adamw is not None:
@@ -244,12 +249,11 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
         if step % cfg.get("log_every", 10) == 0:
             train_loss = float(sum(losses))
-            lr_now = (base_muon if dynmuon is not None else base_adam) * f
-            print(f"step {step + 1:5d}/{train_steps} | loss {train_loss:.4f} | lr {lr_now:.2e}")
+            print(f"step {step + 1:5d}/{train_steps} | loss {train_loss:.4f} | lr {lr_used:.2e}")
             if logger is not None:
                 logger.log({
                     "train/loss": train_loss,
-                    "lr": lr_now,
+                    "lr": lr_used,
                     "tokens/train": (step + 1) * batch_tokens,
                 }, step=step + 1)
             log_routing(model, dynmuon, step + 1, logger)
