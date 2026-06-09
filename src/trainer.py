@@ -229,8 +229,6 @@ def log_routing(model: GPT, dynmuon: DynMuonRoute | None, step: int, logger) -> 
 
 def _matrix_layer_type(name: str) -> str | None:
     """Map GPT matrix parameter names to compact layer-type labels."""
-    if name == "embed.weight":
-        return "embed"
     for suffix, layer_type in (
         ("attn.q.weight", "attn.q"),
         ("attn.k.weight", "attn.k"),
@@ -245,15 +243,24 @@ def _matrix_layer_type(name: str) -> str | None:
 
 
 @torch.no_grad()
-def log_relmuon_scales(model: GPT, step: int, logger, eps: float = 1e-8) -> None:
-    """Log RelMuon-log1p scale diagnostics grouped by layer type.
+def log_matrix_weight_spectra(
+    model: GPT,
+    step: int,
+    logger,
+    *,
+    log_relmuon_scales: bool = False,
+    eps: float = 1e-8,
+) -> None:
+    """Log matrix weight spectrum diagnostics grouped by layer type.
 
-    Muon's active update singular values are all ones. These diagnostics show how
-    far RelMuon's weight-spectrum scales move away from that reference.
+    Raw singular-value summaries show the current weight spectra. For RelMuon,
+    normalized log1p scale summaries show how far its update spectrum moves away
+    from Muon's all-ones update spectrum.
     """
     if logger is None:
         return
-    by_type: dict[str, list[torch.Tensor]] = {}
+    sv_by_type: dict[str, list[torch.Tensor]] = {}
+    scale_by_type: dict[str, list[torch.Tensor]] = {}
     for name, p in model.named_parameters():
         if p.ndim != 2:
             continue
@@ -261,14 +268,37 @@ def log_relmuon_scales(model: GPT, step: int, logger, eps: float = 1e-8) -> None
         if layer_type is None:
             continue
         sv = torch.linalg.svdvals(p.detach().float())
-        raw_scales = torch.log1p(sv.clamp(min=0.0))
-        rms = torch.sqrt(torch.mean(raw_scales.square()))
-        scales = (raw_scales + eps) / (rms + eps)
-        by_type.setdefault(layer_type, []).append(scales)
+        sv_by_type.setdefault(layer_type, []).append(sv)
+        if log_relmuon_scales:
+            raw_scales = torch.log1p(sv.clamp(min=0.0))
+            rms = torch.sqrt(torch.mean(raw_scales.square()))
+            scales = (raw_scales + eps) / (rms + eps)
+            scale_by_type.setdefault(layer_type, []).append(scales)
 
     payload = {}
+    all_sv = []
+    for layer_type, chunks in sv_by_type.items():
+        sv = torch.cat(chunks)
+        all_sv.append(sv)
+        q = torch.quantile(sv, torch.tensor([0.1, 0.5, 0.9], device=sv.device))
+        prefix = f"weight_svd/{layer_type}/sv"
+        payload[f"{prefix}/mean"] = sv.mean().item()
+        payload[f"{prefix}/p10"] = q[0].item()
+        payload[f"{prefix}/median"] = q[1].item()
+        payload[f"{prefix}/p90"] = q[2].item()
+        payload[f"{prefix}/max"] = sv.max().item()
+
+    if all_sv:
+        sv = torch.cat(all_sv)
+        q = torch.quantile(sv, torch.tensor([0.1, 0.5, 0.9], device=sv.device))
+        payload["weight_svd/all/sv/mean"] = sv.mean().item()
+        payload["weight_svd/all/sv/p10"] = q[0].item()
+        payload["weight_svd/all/sv/median"] = q[1].item()
+        payload["weight_svd/all/sv/p90"] = q[2].item()
+        payload["weight_svd/all/sv/max"] = sv.max().item()
+
     all_scales = []
-    for layer_type, chunks in by_type.items():
+    for layer_type, chunks in scale_by_type.items():
         scales = torch.cat(chunks)
         all_scales.append(scales)
         q = torch.quantile(scales, torch.tensor([0.1, 0.5, 0.9], device=scales.device))
@@ -454,8 +484,14 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     "lr": lr_used,
                     "tokens/train": completed_step * batch_tokens,
                 }, step=completed_step)
-            if cfg.get("matrix_optimizer") == "relmuon":
-                log_relmuon_scales(model, completed_step, logger, eps=cfg.get("relmuon_eps", 1e-8))
+            if cfg.get("log_weight_svd", False) and cfg.get("matrix_optimizer") in ("muon", "relmuon", "dynmuon"):
+                log_matrix_weight_spectra(
+                    model,
+                    completed_step,
+                    logger,
+                    log_relmuon_scales=cfg.get("matrix_optimizer") == "relmuon",
+                    eps=cfg.get("relmuon_eps", 1e-8),
+                )
             log_routing(model, dynmuon, completed_step, logger)
 
         if _TERMINATE_REQUESTED:

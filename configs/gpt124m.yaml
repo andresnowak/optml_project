@@ -27,3 +27,6 @@ scalar_weight_decay: 0.0  # embeddings / biases / norm gains
 # FineWeb runs are long enough that RunAI preemption should resume from disk.
 checkpoint_enabled: true
 checkpoint_resume: true
+
+# Log singular-value summaries for Muon-family matrix weights.
+log_weight_svd: true
