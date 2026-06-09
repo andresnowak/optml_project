@@ -27,11 +27,26 @@ def spatial_ablation_builder(model, cfg):
             adamw_params.append(param)
             print(f" Routed MLP/Bias/Norm to AdamW:        {name}")
 
-    # 3. Clear whatever parameters your team's script assigned and overwrite them
-    dynmuon.param_groups = [{"params": muon_params, "lr": cfg.get("muon_lr", 0.02)}]
+    # 3. Preserve the original optimizer metadata and only swap the parameter lists.
+    # DynMuon requires fields such as eps, routing_mode, compute_mode, and the
+    # schedule constants to remain present on each param group.
+    if dynmuon is not None:
+        new_groups = []
+        for group in dynmuon.param_groups:
+            new_group = dict(group)
+            new_group["params"] = muon_params
+            new_groups.append(new_group)
+        dynmuon.param_groups = new_groups
     
     if adamw is not None:
-        adamw.param_groups = [{"params": adamw_params, "lr": cfg.get("adam_lr", 6e-4), "weight_decay": cfg.get("weight_decay", 0.1)}]
+        new_groups = []
+        for group in adamw.param_groups:
+            new_group = dict(group)
+            new_group["params"] = adamw_params
+            new_group.setdefault("lr", cfg.get("adam_lr", 6e-4))
+            new_group.setdefault("weight_decay", cfg.get("weight_decay", 0.1))
+            new_groups.append(new_group)
+        adamw.param_groups = new_groups
     else:
         # If the config didn't build an AdamW optimizer natively, spin one up for the MLP parameters
         print("Creating fallback AdamW instance for routed layers...")
