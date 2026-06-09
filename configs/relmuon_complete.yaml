@@ -1,0 +1,4 @@
+# RelMuon-complete: Muon singular directions with raw weight singular values.
+extends: relmuon_log1p.yaml
+run_name: relmuon_complete
+relmuon_scale_mode: complete

@@ -70,6 +70,7 @@ def build_optimizers(model: nn.Module, cfg: dict):
             nesterov=cfg.get("nesterov", True),
             eps=cfg.get("relmuon_eps", 1e-8),
             adjust_lr_fn=cfg.get("adjust_lr_fn", None),
+            scale_mode=cfg.get("relmuon_scale_mode", "log1p"),
         )
         aux_groups = _adamw_aux_groups(split, cfg)
         adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None

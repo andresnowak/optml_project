@@ -15,6 +15,7 @@ from .data import get_token_batch, iter_microbatches, load_bin, validation_offse
 from .models import GPT, GPTConfig
 from .optimizers import build_optimizers
 from .optimizers.dynmuon import DynMuonRoute, _svd
+from .optimizers.relmuon import relmuon_weight_scales
 
 
 _TERMINATE_REQUESTED = False
@@ -306,13 +307,14 @@ def log_matrix_weight_spectra(
     logger,
     *,
     log_relmuon_scales: bool = False,
+    relmuon_scale_mode: str = "log1p",
     eps: float = 1e-8,
 ) -> None:
     """Log matrix weight spectrum diagnostics grouped by layer type.
 
     Raw singular-value summaries show the current weight spectra. For RelMuon,
-    normalized log1p scale summaries show how far its update spectrum moves away
-    from Muon's all-ones update spectrum.
+    scale summaries show how far its update spectrum moves away from Muon's
+    all-ones update spectrum.
     """
     if logger is None:
         return
@@ -327,9 +329,7 @@ def log_matrix_weight_spectra(
         sv = torch.linalg.svdvals(p.detach().float())
         sv_by_type.setdefault(layer_type, []).append(sv)
         if log_relmuon_scales:
-            raw_scales = torch.log1p(sv.clamp(min=0.0))
-            rms = torch.sqrt(torch.mean(raw_scales.square()))
-            scales = (raw_scales + eps) / (rms + eps)
+            scales = relmuon_weight_scales(p.detach(), scale_mode=relmuon_scale_mode, eps=eps)
             scale_by_type.setdefault(layer_type, []).append(scales)
 
     payload = {}
@@ -552,6 +552,7 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     completed_step,
                     logger,
                     log_relmuon_scales=cfg.get("matrix_optimizer") == "relmuon",
+                    relmuon_scale_mode=cfg.get("relmuon_scale_mode", "log1p"),
                     eps=cfg.get("relmuon_eps", 1e-8),
                 )
             if cfg.get("log_weight_update_ratio", False) and weight_update_before is not None:

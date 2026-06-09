@@ -1,7 +1,7 @@
-"""RelMuon-log1p optimizer for matrix parameters.
+"""RelMuon optimizer for matrix parameters.
 
 RelMuon keeps Muon's gradient-facing singular vectors, but replaces Muon's flat
-update spectrum with normalized ``log(1 + singular_value(weight))`` scales.
+update spectrum with scales derived from the current weight singular values.
 """
 
 from __future__ import annotations
@@ -13,33 +13,59 @@ import torch
 from torch import Tensor
 
 
+RELMUON_SCALE_MODES = ("log1p", "rms", "complete")
+
+
+def _validate_scale_mode(scale_mode: str) -> None:
+    if scale_mode not in RELMUON_SCALE_MODES:
+        modes = ", ".join(RELMUON_SCALE_MODES)
+        raise ValueError(f"Unknown RelMuon scale mode {scale_mode!r}; expected one of: {modes}")
+
+
+def relmuon_weight_scales(weight: Tensor, scale_mode: str = "log1p", eps: float = 1e-8) -> Tensor:
+    """Return the singular scales RelMuon will use for a weight matrix."""
+    _validate_scale_mode(scale_mode)
+    sv = torch.linalg.svdvals(weight.float()).clamp(min=0.0)
+    if scale_mode == "complete":
+        return sv
+    if scale_mode == "rms":
+        rms = torch.sqrt(torch.mean(sv.square()))
+        return (sv + eps) / (rms + eps)
+    if scale_mode == "log1p":
+        log_scales = torch.log1p(sv)
+        rms = torch.sqrt(torch.mean(log_scales.square()))
+        return (log_scales + eps) / (rms + eps)
+    raise AssertionError(f"Unhandled RelMuon scale mode: {scale_mode}")
+
+
 @torch.compile
-def relmuon_log1p_update(
+def relmuon_update(
     grad: Tensor,
     weight: Tensor,
     momentum: Tensor,
     mu: float = 0.95,
     nesterov: bool = True,
     eps: float = 1e-8,
+    scale_mode: str = "log1p",
 ) -> Tensor:
-    """Build the log1p RelMuon matrix update."""
+    """Build a RelMuon matrix update."""
     momentum.lerp_(grad, 1.0 - mu)
     update = grad.lerp(momentum, mu) if nesterov else momentum
     update_f = update.float()
-    weight_f = weight.float()
 
     U, _, Vh = torch.linalg.svd(update_f, full_matrices=False)
-    scales = torch.log1p(torch.linalg.svdvals(weight_f).clamp(min=0.0))
-    rms = torch.sqrt(torch.mean(scales.square()))
-    scales = (scales + eps) / (rms + eps)
+    scales = relmuon_weight_scales(weight, scale_mode=scale_mode, eps=eps)
 
     rank = min(U.size(-1), Vh.size(-2), scales.numel())
     shaped = (U[:, :rank] * scales[:rank].to(U.dtype)) @ Vh[:rank, :]
     return shaped.to(dtype=grad.dtype)
 
 
+relmuon_log1p_update = relmuon_update
+
+
 class RelMuon(torch.optim.Optimizer):
-    """Log1p RelMuon for 2D matrix parameters.
+    """RelMuon for 2D matrix parameters.
 
     Non-matrix parameters should be optimized by the auxiliary AdamW path.
     """
@@ -53,12 +79,14 @@ class RelMuon(torch.optim.Optimizer):
         nesterov: bool = True,
         eps: float = 1e-8,
         adjust_lr_fn: str | None = None,
+        scale_mode: str = "log1p",
     ):
         if adjust_lr_fn not in (None, "none"):
             raise ValueError(f"RelMuon only supports adjust_lr_fn=None for now, got {adjust_lr_fn!r}")
+        _validate_scale_mode(scale_mode)
         defaults = dict(
             lr=lr, weight_decay=weight_decay, mu=mu, nesterov=nesterov,
-            eps=eps, adjust_lr_fn=adjust_lr_fn,
+            eps=eps, adjust_lr_fn=adjust_lr_fn, scale_mode=scale_mode,
         )
         super().__init__(params, defaults)
 
@@ -82,13 +110,14 @@ class RelMuon(torch.optim.Optimizer):
                 state = self.state[p]
                 if "momentum" not in state:
                     state["momentum"] = torch.zeros_like(p)
-                update = relmuon_log1p_update(
+                update = relmuon_update(
                     p.grad,
                     p,
                     state["momentum"],
                     mu=group["mu"],
                     nesterov=group["nesterov"],
                     eps=group["eps"],
+                    scale_mode=group["scale_mode"],
                 )
                 if group["weight_decay"]:
                     p.mul_(1.0 - group["lr"] * group["weight_decay"])
