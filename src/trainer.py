@@ -34,6 +34,7 @@ class WandbLogger:
     def __init__(self, cfg: dict) -> None:
         import wandb
         self._wandb = wandb
+        settings = wandb.Settings(init_timeout=cfg.get("wandb_init_timeout", 180))
         self._run = wandb.init(
             project=cfg.get("wandb_project", "dynmuon-route"),
             entity=cfg.get("wandb_entity"),
@@ -43,6 +44,7 @@ class WandbLogger:
             resume="allow" if cfg.get("wandb_run_id") else None,
             config=cfg,
             reinit=True,
+            settings=settings,
         )
 
     def log(self, payload: dict, step: int) -> None:
@@ -63,6 +65,12 @@ class TeeLogger:
     def log(self, payload: dict, step: int) -> None:
         for logger in self.loggers:
             logger.log(payload, step=step)
+
+    def finish(self) -> None:
+        for logger in self.loggers:
+            finish = getattr(logger, "finish", None)
+            if finish is not None:
+                finish()
 
 
 def build_arm_logger(cfg: dict, use_wandb: bool, run_name: str, group: str):
@@ -190,6 +198,14 @@ def _wandb_run_id(logger) -> str | None:
         if run_id is not None:
             return run_id
     return None
+
+
+def _finish_logger(logger) -> None:
+    if logger is None:
+        return
+    finish = getattr(logger, "finish", None)
+    if finish is not None:
+        finish()
 
 
 def _install_signal_handlers() -> None:
@@ -501,6 +517,7 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     logger=logger,
                 )
             if _TERMINATE_REQUESTED:
+                _finish_logger(logger)
                 return model, logger
             t0 = time.perf_counter()
         if step == train_steps:
@@ -576,6 +593,8 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     cfg=cfg,
                     logger=logger,
                 )
+            _finish_logger(logger)
             return model, logger
 
+    _finish_logger(logger)
     return model, logger
