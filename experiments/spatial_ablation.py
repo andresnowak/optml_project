@@ -2,52 +2,54 @@ import torch
 import src.trainer
 from src.cli import main
 
-# 1. We need to import the RelMuon class. 
-# Check your src/optimizers folder if this path needs a slight adjustment!
-from src.optimizers.relmuon import RelMuon 
-
 def spatial_ablation_builder(model, cfg):
-    print("\n🚀 [SPATIAL ABLATION] Intercepting Optimizers!")
-    print("-> Routing Attention matrices to RelMuon.")
-    print("-> Routing MLP matrices, biases, and norms to AdamW.\n")
+    # 1. Let the codebase build the native optimizers using its own registry logic
+    # This prevents any ModuleNotFound or config initialization crashes!
+    dynmuon, adamw = src.trainer.build_optimizers_original(model, cfg)
     
+    print("\n🚀 [SPATIAL ABLATION] Intercepting Built Optimizers!")
+    
+    if dynmuon is None:
+        raise ValueError("Spatial ablation expects a matrix optimizer (like relmuon or muon) to be active in the config!")
+
     muon_params = []
     adamw_params = []
     
-    # 2. Iterate through every single tensor in the neural network
+    # 2. Re-route the parameters based on names
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        
-        # 3. The Routing Logic:
-        # If it's a 2D matrix (like a linear layer) AND it belongs to the 
-        # Attention mechanism ('attn' in the name), give it to RelMuon.
+            
         if param.ndim >= 2 and 'attn' in name:
             muon_params.append(param)
-            print(f"[RelMuon] {name}")
+            print(f" Routed Attention to Matrix Optimizer: {name}")
         else:
-            # Give the MLP layers and 1D tensors to AdamW
             adamw_params.append(param)
-            print(f"[AdamW]   {name}")
-            
-    print("\nInitializing parameter groups...")
+            print(f" Routed MLP/Bias/Norm to AdamW:        {name}")
+
+    # 3. Clear whatever parameters your team's script assigned and overwrite them
+    dynmuon.param_groups = [{"params": muon_params, "lr": cfg.get("muon_lr", 0.02)}]
     
-    # 4. Build the optimizers using the learning rates from your YAML configs
-    opt_muon = RelMuon(muon_params, lr=cfg.get("muon_lr", 0.02))
-    opt_adamw = torch.optim.AdamW(
-        adamw_params, 
-        lr=cfg.get("adam_lr", 6e-4), 
-        weight_decay=cfg.get("weight_decay", 0.1),
-        betas=(0.9, 0.95)
-    )
-    
-    return opt_muon, opt_adamw
+    if adamw is not None:
+        adamw.param_groups = [{"params": adamw_params, "lr": cfg.get("adam_lr", 6e-4), "weight_decay": cfg.get("weight_decay", 0.1)}]
+    else:
+        # If the config didn't build an AdamW optimizer natively, spin one up for the MLP parameters
+        print("Creating fallback AdamW instance for routed layers...")
+        adamw = torch.optim.AdamW(
+            adamw_params, 
+            lr=cfg.get("adam_lr", 6e-4), 
+            weight_decay=cfg.get("weight_decay", 0.1),
+            betas=(0.9, 0.95)
+        )
+        
+    return dynmuon, adamw
 
 if __name__ == "__main__":
-    # 5. The Monkey-Patch: We overwrite the team's standard optimizer builder
-    # with our custom spatial router inside the trainer module.
+    # Save a reference to the original factory function so we can use it inside our interceptor
+    src.trainer.build_optimizers_original = src.trainer.build_optimizers
+    
+    # Inject our monkey-patch
     src.trainer.build_optimizers = spatial_ablation_builder
     
-    # 6. Call the standard CLI. It will load the config, build the model, 
-    # but when it tries to build optimizers, it will trigger our code above!
+    # Hand control back over to the CLI
     main()
