@@ -96,7 +96,7 @@ class CausalSelfAttention(nn.Module):
             q.transpose(1, 2),
             k.transpose(1, 2),
             v.transpose(1, 2),
-            scale=0.12,
+            scale=self.head_dim ** -0.5,
             is_causal=True,
         ).transpose(1, 2)
         return self.proj(y.contiguous().view(B, T, C))
