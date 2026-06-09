@@ -132,12 +132,13 @@ def _checkpoint_path(cfg: dict) -> str:
 
 
 def _load_checkpoint(path: str, device: torch.device) -> dict | None:
+    del device
     if not os.path.exists(path):
         return None
     try:
-        return torch.load(path, map_location=device, weights_only=False)
+        return torch.load(path, map_location="cpu", weights_only=False)
     except TypeError:
-        return torch.load(path, map_location=device)
+        return torch.load(path, map_location="cpu")
 
 
 def _save_checkpoint(
@@ -171,9 +172,10 @@ def _save_checkpoint(
 
 def _restore_rng_state(ckpt: dict) -> None:
     if ckpt.get("torch_rng_state") is not None:
-        torch.set_rng_state(ckpt["torch_rng_state"])
+        torch.set_rng_state(ckpt["torch_rng_state"].detach().cpu().to(torch.uint8))
     if ckpt.get("cuda_rng_state_all") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(ckpt["cuda_rng_state_all"])
+        cuda_states = [state.detach().cpu().to(torch.uint8) for state in ckpt["cuda_rng_state_all"]]
+        torch.cuda.set_rng_state_all(cuda_states)
 
 
 def _wandb_run_id(logger) -> str | None:
