@@ -126,7 +126,7 @@ case "${CMD}" in
   baselines)
     _submit "${JOB_PREFIX}-baselines-${STAMP}" "${PROJECT_DIR}/experiments/baselines_step_efficiency.py" "$@" ;;
   spatial)
-    _submit "${JOB_PREFIX}-spatial-${STAMP}" "${PROJECT_DIR}/experiments/exp3_spatial_ablation.py" "$@" ;;
+    _submit "${JOB_PREFIX}-spatial-${STAMP}" "${PROJECT_DIR}/experiments/spatial_ablation.py" "$@" ;;
   logs)
     runai logs "${1:?usage: $0 logs <job-name>}" ;;
   delete)
