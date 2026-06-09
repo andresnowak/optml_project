@@ -30,3 +30,6 @@ checkpoint_resume: true
 
 # Log singular-value summaries for Muon-family matrix weights.
 log_weight_svd: true
+
+# Log how much each matrix weight changes on optimizer steps.
+log_weight_update_ratio: true

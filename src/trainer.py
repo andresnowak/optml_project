@@ -237,6 +237,68 @@ def _matrix_layer_type(name: str) -> str | None:
     return None
 
 
+def _matrix_param_snapshots(model: GPT) -> dict[str, torch.Tensor]:
+    """Clone matrix weights whose updates we want to diagnose."""
+    snapshots = {}
+    for name, p in model.named_parameters():
+        if p.ndim == 2 and _matrix_layer_type(name) is not None:
+            snapshots[name] = p.detach().float().clone()
+    return snapshots
+
+
+@torch.no_grad()
+def log_matrix_update_ratios(
+    model: GPT,
+    before: dict[str, torch.Tensor],
+    step: int,
+    logger,
+    *,
+    eps: float = 1e-12,
+) -> None:
+    """Log relative matrix update sizes grouped by layer type."""
+    if logger is None or not before:
+        return
+    by_type: dict[str, dict[str, list[float]]] = {}
+    for name, p in model.named_parameters():
+        old = before.get(name)
+        layer_type = _matrix_layer_type(name)
+        if old is None or layer_type is None:
+            continue
+        new = p.detach().float()
+        old = old.to(device=new.device)
+        delta = new - old
+        weight_fro = torch.linalg.norm(old).item()
+        update_fro = torch.linalg.norm(delta).item()
+        weight_op = torch.linalg.svdvals(old).amax().item()
+        update_op = torch.linalg.svdvals(delta).amax().item()
+        bucket = by_type.setdefault(layer_type, {
+            "fro_ratio": [],
+            "op_ratio": [],
+            "update_fro": [],
+            "weight_fro": [],
+            "update_op": [],
+            "weight_op": [],
+        })
+        bucket["fro_ratio"].append(update_fro / (weight_fro + eps))
+        bucket["op_ratio"].append(update_op / (weight_op + eps))
+        bucket["update_fro"].append(update_fro)
+        bucket["weight_fro"].append(weight_fro)
+        bucket["update_op"].append(update_op)
+        bucket["weight_op"].append(weight_op)
+
+    payload = {}
+    all_values: dict[str, list[float]] = {}
+    for layer_type, stats in by_type.items():
+        for key, values in stats.items():
+            value = float(sum(values) / max(1, len(values)))
+            payload[f"weight_update/{layer_type}/{key}/mean"] = value
+            all_values.setdefault(key, []).extend(values)
+    for key, values in all_values.items():
+        payload[f"weight_update/all/{key}/mean"] = float(sum(values) / max(1, len(values)))
+    if payload:
+        logger.log(payload, step=step)
+
+
 @torch.no_grad()
 def log_matrix_weight_spectra(
     model: GPT,
@@ -459,6 +521,11 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
             loss.backward()
             losses.append(loss.item())
 
+        should_log_step = step % cfg.get("log_every", 10) == 0
+        weight_update_before = None
+        if should_log_step and logger is not None and cfg.get("log_weight_update_ratio", False):
+            weight_update_before = _matrix_param_snapshots(model)
+
         if clip:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
         primary_optimizer = dynmuon if dynmuon is not None else adamw
@@ -470,7 +537,7 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
         completed_step = step + 1
 
-        if step % cfg.get("log_every", 10) == 0:
+        if should_log_step:
             train_loss = float(sum(losses))
             print(f"step {completed_step:5d}/{train_steps} | loss {train_loss:.4f} | lr {lr_used:.2e}")
             if logger is not None:
@@ -487,6 +554,8 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     log_relmuon_scales=cfg.get("matrix_optimizer") == "relmuon",
                     eps=cfg.get("relmuon_eps", 1e-8),
                 )
+            if cfg.get("log_weight_update_ratio", False) and weight_update_before is not None:
+                log_matrix_update_ratios(model, weight_update_before, completed_step, logger)
             log_routing(model, dynmuon, completed_step, logger)
 
         if _TERMINATE_REQUESTED:
