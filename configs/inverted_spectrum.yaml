@@ -1,0 +1,8 @@
+# Inverted spectrum ablation: update singular vectors from M, normalized reversed singular values.
+extends: base.yaml
+matrix_optimizer: dynmuon
+routing_mode: fixed
+fixed_p: 0.0
+spectrum_mode: inverted
+compute_mode: svd
+run_name: inverted_spectrum

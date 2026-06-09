@@ -18,6 +18,7 @@ n_head: 6
 matrix_optimizer: dynmuon       # dynmuon | muon | adamw
 routing_mode: schedule_modulated  # fixed | global_schedule | schedule_modulated | stable_rank | snr | alignment
 fixed_p: 0.0               # used when routing_mode=fixed (0.0 = Muon, 1.0 = SGD)
+spectrum_mode: power       # power | relmuon | random_uniform | inverted
 compute_mode: ns           # ns (fast Newton-Schulz/eigen) | svd (exact)
 ns_variant: quintic        # quintic (reference DynMuon) | cubic (textbook)
 ns_steps: 5                # DynMuon cubic steps; Muon configs override this to 12

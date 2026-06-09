@@ -115,6 +115,13 @@ def log_routing(model: GPT, dynmuon: DynMuonRoute | None, step: int, logger) -> 
         return
     name_of = {id(p): n for n, p in model.named_parameters()}
     payload = {}
+
+    # Log global schedule p_t if active (reference for deviation plots).
+    if dynmuon.param_groups:
+        g = dynmuon.param_groups[0]
+        if g.get("routing_mode") in ("global_schedule", "schedule_modulated"):
+            payload["route/p_global"] = dynmuon._p_schedule(g)
+
     for group in dynmuon.param_groups:
         group_name = group.get("name", "matrix")
         for p in group["params"]:

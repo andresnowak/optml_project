@@ -85,6 +85,7 @@ def build_optimizers(model: nn.Module, cfg: dict):
         momentum=cfg.get("momentum", 0.95),
         nesterov=cfg.get("nesterov", True),
         routing_mode=routing_mode,
+        spectrum_mode=cfg.get("spectrum_mode", "power"),
         compute_mode=cfg["compute_mode"],
         ns_variant=cfg.get("ns_variant", "quintic"),
         ns_steps=cfg.get("ns_steps", 5),

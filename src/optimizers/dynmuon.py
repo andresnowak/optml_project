@@ -45,6 +45,7 @@ ROUTING_MODES = (
 PROXY_METRICS = ("stable_rank", "snr", "alignment")
 COMPUTE_MODES = ("svd", "ns")
 NS_VARIANTS = ("quintic", "cubic")
+SPECTRUM_MODES = ("power", "relmuon", "random_uniform", "inverted")
 
 # Tuned quintic Newton-Schulz coefficients from the reference DynMuon/Dion repo.
 # Each row (a, b, c) applies X <- a X + b (X Xᵀ) X + c (X Xᵀ)² X for one iteration.
@@ -149,6 +150,7 @@ class DynMuonRoute(torch.optim.Optimizer):
         momentum: float = 0.95,
         nesterov: bool = True,
         routing_mode: str = "stable_rank",
+        spectrum_mode: str = "power",
         compute_mode: str = "ns",
         ns_variant: str = "quintic",
         ns_steps: int = 5,
@@ -170,6 +172,8 @@ class DynMuonRoute(torch.optim.Optimizer):
     ):
         if routing_mode not in ROUTING_MODES:
             raise ValueError(f"routing_mode must be one of {ROUTING_MODES}, got {routing_mode}")
+        if spectrum_mode not in SPECTRUM_MODES:
+            raise ValueError(f"spectrum_mode must be one of {SPECTRUM_MODES}, got {spectrum_mode}")
         if compute_mode not in COMPUTE_MODES:
             raise ValueError(f"compute_mode must be one of {COMPUTE_MODES}, got {compute_mode}")
         if ns_variant not in NS_VARIANTS:
@@ -185,7 +189,8 @@ class DynMuonRoute(torch.optim.Optimizer):
             raise ValueError(f"routing_mode={routing_mode!r} requires total_steps > 0")
         defaults = dict(
             lr=lr, momentum=momentum, nesterov=nesterov, routing_mode=routing_mode,
-            compute_mode=compute_mode, ns_variant=ns_variant, ns_steps=ns_steps, eps=eps,
+            spectrum_mode=spectrum_mode, compute_mode=compute_mode,
+            ns_variant=ns_variant, ns_steps=ns_steps, eps=eps,
             adjust_lr_fn=adjust_lr_fn, p_min=p_min, p_max=p_max, mu=mu, omega=omega,
             ref=ref, beta=beta, dynamic_ref=dynamic_ref, ref_decay=ref_decay,
             modulate_metric=modulate_metric,
@@ -283,8 +288,15 @@ class DynMuonRoute(torch.optim.Optimizer):
             return None
         X_n = M2 / fro_M
 
+        spectrum_mode = group["spectrum_mode"]
+
         # Spectral decomposition (needed for both the proxy and the shaping).
-        if group["compute_mode"] == "svd":
+        # Non-power spectra need explicit singular vectors/values, so they force
+        # the exact SVD path even when compute_mode is configured as "ns".
+        if spectrum_mode != "power":
+            U, S, Vh = _svd(M2)
+            lam_max = float(((S[0] / fro_M) ** 2).item())
+        elif group["compute_mode"] == "svd":
             U, S, Vh = _svd(X_n)
             lam_max = float((S[0] ** 2).item())
         else:
@@ -309,11 +321,27 @@ class DynMuonRoute(torch.optim.Optimizer):
         p_exp = self._select_p(group, x)
 
         # -- shape D(p) = U Σ^p Vᵀ -----------------------------------------
-        if group["compute_mode"] == "svd":
+        if spectrum_mode == "power" and group["compute_mode"] == "svd":
             D = (U * S.clamp(min=eps).pow(p_exp)) @ Vh
-        else:
+        elif spectrum_mode == "power":
             A_p2 = (Q * evals.clamp(min=eps).pow(p_exp / 2.0)) @ Q.transpose(-2, -1)
             D = A_p2 @ Y_mu
+        elif spectrum_mode == "relmuon":
+            _, S_w, _ = _svd(W2)
+            r = min(S.numel(), S_w.numel())
+            S_hat = S_w[:r]
+            S_hat = S_hat / (torch.sqrt(torch.mean(S_hat.square())) + 1e-8)
+            D = (U[:, :r] * S_hat.to(dtype=U.dtype, device=U.device)) @ Vh[:r, :]
+        elif spectrum_mode == "random_uniform":
+            S_hat = torch.rand_like(S)
+            S_hat = S_hat / (torch.sqrt(torch.mean(S_hat.square())) + 1e-8)
+            D = (U * S_hat) @ Vh
+        elif spectrum_mode == "inverted":
+            S_hat = torch.flip(S, dims=[0])
+            S_hat = S_hat / (torch.sqrt(torch.mean(S_hat.square())) + 1e-8)
+            D = (U * S_hat) @ Vh
+        else:
+            raise RuntimeError(f"unsupported spectrum_mode: {spectrum_mode}")
 
         if transposed:
             D = D.transpose(0, 1)
