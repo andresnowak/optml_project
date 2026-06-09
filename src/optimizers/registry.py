@@ -8,6 +8,7 @@ from torch import nn
 from .dynmuon import DynMuonRoute
 from .muon import Muon
 from .param_groups import split_gpt_params
+from .relmuon import RelMuon
 
 
 def _adamw_aux_groups(split, cfg: dict) -> list[dict]:
@@ -57,6 +58,22 @@ def build_optimizers(model: nn.Module, cfg: dict):
         aux_groups = _adamw_aux_groups(split, cfg)
         adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None
         return muon, adamw
+
+    if matrix_optimizer == "relmuon":
+        split = split_gpt_params(model, routed=False)
+        matrix_params = sorted(split.matrix.get("matrix", []), key=lambda p: p.size(), reverse=True)
+        relmuon = RelMuon(
+            matrix_params,
+            lr=cfg["muon_lr"],
+            weight_decay=cfg.get("weight_decay", 0.0),
+            mu=cfg.get("momentum", 0.95),
+            nesterov=cfg.get("nesterov", True),
+            eps=cfg.get("relmuon_eps", 1e-8),
+            adjust_lr_fn=cfg.get("adjust_lr_fn", None),
+        )
+        aux_groups = _adamw_aux_groups(split, cfg)
+        adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None
+        return relmuon, adamw
 
     routed = cfg.get("routing_mode") == "schedule_modulated"
     split = split_gpt_params(model, routed=routed)

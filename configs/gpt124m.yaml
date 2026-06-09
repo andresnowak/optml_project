@@ -23,3 +23,7 @@ val_tokens: 10485760
 val_loss_every: 125
 weight_decay: 0.1
 scalar_weight_decay: 0.0  # embeddings / biases / norm gains
+
+# FineWeb runs are long enough that RunAI preemption should resume from disk.
+checkpoint_enabled: true
+checkpoint_resume: true

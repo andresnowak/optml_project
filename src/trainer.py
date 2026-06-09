@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import os
+import signal
 import time
 from contextlib import nullcontext
 
@@ -13,6 +15,9 @@ from .data import get_token_batch, iter_microbatches, load_bin, validation_offse
 from .models import GPT, GPTConfig
 from .optimizers import build_optimizers
 from .optimizers.dynmuon import DynMuonRoute, _svd
+
+
+_TERMINATE_REQUESTED = False
 
 
 class MemoryLogger:
@@ -33,6 +38,8 @@ class WandbLogger:
             entity=cfg.get("wandb_entity"),
             name=cfg.get("run_name"),
             group=cfg.get("wandb_group"),
+            id=cfg.get("wandb_run_id"),
+            resume="allow" if cfg.get("wandb_run_id") else None,
             config=cfg,
             reinit=True,
         )
@@ -42,6 +49,10 @@ class WandbLogger:
 
     def finish(self) -> None:
         self._run.finish()
+
+    @property
+    def run_id(self) -> str:
+        return self._run.id
 
 
 class TeeLogger:
@@ -76,11 +87,14 @@ def lr_factor(step: int, warmup_steps: int, train_steps: int, min_lr_ratio: floa
         eta = (step + 1) / warmup_steps                         during warmup
         eta = min_lr_ratio + cosine_decay * (1 - min_lr_ratio)  after warmup
 
-    The final multiplier approaches ``min_lr_ratio`` rather than zero.
+    The last optimizer update (``step == train_steps - 1``) reaches
+    ``min_lr_ratio`` exactly.
     """
     if step < warmup_steps:
         return (step + 1) / max(1, warmup_steps)
-    progress = (step - warmup_steps) / max(1, train_steps - warmup_steps)
+
+    decay_steps = max(1, train_steps - warmup_steps - 1)
+    progress = (step - warmup_steps) / decay_steps
     cosine = 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
     return min_lr_ratio + cosine * (1 - min_lr_ratio)
 
@@ -109,6 +123,82 @@ def _validate_batching(cfg: dict) -> None:
         raise ValueError("batch_size must be divisible by mbs")
 
 
+def _checkpoint_path(cfg: dict) -> str:
+    base_dir = cfg.get("checkpoint_dir") or os.environ.get("CHECKPOINT_DIR") or "~/checkpoints/optml_project"
+    base_dir = os.path.expanduser(base_dir)
+    run_name = cfg.get("run_name") or cfg.get("model") or "run"
+    safe_run_name = "".join(c if c.isalnum() or c in "._=-" else "_" for c in run_name)
+    return os.path.join(base_dir, safe_run_name, "latest.pt")
+
+
+def _load_checkpoint(path: str, device: torch.device) -> dict | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        return torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=device)
+
+
+def _save_checkpoint(
+    path: str,
+    *,
+    model: GPT,
+    dynmuon,
+    adamw,
+    step: int,
+    training_time: float,
+    cfg: dict,
+    logger=None,
+) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {
+        "step": step,
+        "training_time": training_time,
+        "cfg": cfg,
+        "model": model.state_dict(),
+        "dynmuon": dynmuon.state_dict() if dynmuon is not None else None,
+        "adamw": adamw.state_dict() if adamw is not None else None,
+        "torch_rng_state": torch.get_rng_state(),
+        "cuda_rng_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "wandb_run_id": _wandb_run_id(logger),
+    }
+    tmp_path = f"{path}.tmp"
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, path)
+    print(f"saved checkpoint {path} at step {step}")
+
+
+def _restore_rng_state(ckpt: dict) -> None:
+    if ckpt.get("torch_rng_state") is not None:
+        torch.set_rng_state(ckpt["torch_rng_state"])
+    if ckpt.get("cuda_rng_state_all") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(ckpt["cuda_rng_state_all"])
+
+
+def _wandb_run_id(logger) -> str | None:
+    if logger is None:
+        return None
+    run_id = getattr(logger, "run_id", None)
+    if run_id is not None:
+        return run_id
+    for child in getattr(logger, "loggers", ()):
+        run_id = _wandb_run_id(child)
+        if run_id is not None:
+            return run_id
+    return None
+
+
+def _install_signal_handlers() -> None:
+    def request_terminate(signum, frame) -> None:
+        del signum, frame
+        global _TERMINATE_REQUESTED
+        _TERMINATE_REQUESTED = True
+        print("termination requested; will checkpoint at the next safe point")
+
+    signal.signal(signal.SIGTERM, request_terminate)
+
+
 def log_routing(model: GPT, dynmuon: DynMuonRoute | None, step: int, logger) -> None:
     """Log per-parameter routing diagnostics cached by DynMuonRoute."""
     if logger is None or dynmuon is None:
@@ -135,6 +225,69 @@ def log_routing(model: GPT, dynmuon: DynMuonRoute | None, step: int, logger) -> 
             payload[f"route/gamma/{n}"] = st["last_gamma"]
             payload[f"route/alpha/{n}"] = st["last_alpha"]
     logger.log(payload, step=step)
+
+
+def _matrix_layer_type(name: str) -> str | None:
+    """Map GPT matrix parameter names to compact layer-type labels."""
+    if name == "embed.weight":
+        return "embed"
+    for suffix, layer_type in (
+        ("attn.q.weight", "attn.q"),
+        ("attn.k.weight", "attn.k"),
+        ("attn.v.weight", "attn.v"),
+        ("attn.proj.weight", "attn.proj"),
+        ("mlp.fc.weight", "mlp.fc"),
+        ("mlp.proj.weight", "mlp.proj"),
+    ):
+        if name.endswith(suffix):
+            return layer_type
+    return None
+
+
+@torch.no_grad()
+def log_relmuon_scales(model: GPT, step: int, logger, eps: float = 1e-8) -> None:
+    """Log RelMuon-log1p scale diagnostics grouped by layer type.
+
+    Muon's active update singular values are all ones. These diagnostics show how
+    far RelMuon's weight-spectrum scales move away from that reference.
+    """
+    if logger is None:
+        return
+    by_type: dict[str, list[torch.Tensor]] = {}
+    for name, p in model.named_parameters():
+        if p.ndim != 2:
+            continue
+        layer_type = _matrix_layer_type(name)
+        if layer_type is None:
+            continue
+        sv = torch.linalg.svdvals(p.detach().float())
+        raw_scales = torch.log1p(sv.clamp(min=0.0))
+        rms = torch.sqrt(torch.mean(raw_scales.square()))
+        scales = (raw_scales + eps) / (rms + eps)
+        by_type.setdefault(layer_type, []).append(scales)
+
+    payload = {}
+    all_scales = []
+    for layer_type, chunks in by_type.items():
+        scales = torch.cat(chunks)
+        all_scales.append(scales)
+        q = torch.quantile(scales, torch.tensor([0.1, 0.5, 0.9], device=scales.device))
+        prefix = f"relmuon/{layer_type}/scale"
+        payload[f"{prefix}/mean_abs_delta_from_one"] = (scales - 1.0).abs().mean().item()
+        payload[f"{prefix}/p10"] = q[0].item()
+        payload[f"{prefix}/median"] = q[1].item()
+        payload[f"{prefix}/p90"] = q[2].item()
+
+    if all_scales:
+        scales = torch.cat(all_scales)
+        q = torch.quantile(scales, torch.tensor([0.1, 0.5, 0.9], device=scales.device))
+        payload["relmuon/all/scale/mean_abs_delta_from_one"] = (scales - 1.0).abs().mean().item()
+        payload["relmuon/all/scale/p10"] = q[0].item()
+        payload["relmuon/all/scale/median"] = q[1].item()
+        payload["relmuon/all/scale/p90"] = q[2].item()
+
+    if payload:
+        logger.log(payload, step=step)
 
 
 @torch.no_grad()
@@ -166,12 +319,18 @@ def estimate_loss(model, data, cfg, device, amp_ctx) -> tuple[float, int]:
 
 
 def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
+    global _TERMINATE_REQUESTED
+    _TERMINATE_REQUESTED = False
+    _install_signal_handlers()
+
     _validate_batching(cfg)
     device = pick_device(cfg.get("device", "auto"))
     torch.manual_seed(cfg.get("seed", 0))
 
     model_cfg = _model_config(cfg)
     model = GPT(model_cfg).to(device)
+    model.compile(dynamic=False)
+
     print(f"model: {model.num_params() / 1e6:.1f}M non-embedding params")
 
     data_dir = cfg.get("data_dir", "data/wikitext103")
@@ -179,6 +338,26 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
     val_data = load_bin(f"{data_dir}/{cfg.get('val_bin', 'val.bin')}")
 
     dynmuon, adamw = build_optimizers(model, cfg)
+
+    checkpoint_enabled = bool(cfg.get("checkpoint_enabled", False))
+    checkpoint_path = _checkpoint_path(cfg)
+    start_step = 0
+    training_time = 0.0
+    if checkpoint_enabled and cfg.get("checkpoint_resume", True):
+        ckpt = _load_checkpoint(checkpoint_path, device)
+        if ckpt is not None:
+            model.load_state_dict(ckpt["model"])
+            if dynmuon is not None and ckpt.get("dynmuon") is not None:
+                dynmuon.load_state_dict(ckpt["dynmuon"])
+            if adamw is not None and ckpt.get("adamw") is not None:
+                adamw.load_state_dict(ckpt["adamw"])
+            _restore_rng_state(ckpt)
+            if ckpt.get("wandb_run_id") and not cfg.get("wandb_run_id"):
+                cfg["wandb_run_id"] = ckpt["wandb_run_id"]
+            start_step = int(ckpt.get("step", 0))
+            training_time = float(ckpt.get("training_time", 0.0))
+            print(f"resumed checkpoint {checkpoint_path} from step {start_step}")
+
     if logger is None and cfg.get("wandb", False):
         logger = WandbLogger(cfg)
 
@@ -194,15 +373,15 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
     batch_tokens = batch_size * cfg["sequence_length"]
     mbs = cfg["mbs"]
     val_loss_every = cfg.get("val_loss_every", 0)
+    checkpoint_every = cfg.get("checkpoint_every", val_loss_every)
     warmup_steps = cfg.get("warmup_steps", max(1, train_steps // 50))
     min_lr_ratio = cfg.get("min_lr_ratio", 0.1)
     clip = cfg.get("grad_clip", 1.0)
     base_muon, base_adam = cfg["muon_lr"], cfg["adam_lr"]
 
     model.train()
-    training_time = 0.0
     t0 = time.perf_counter()
-    for step in range(train_steps + 1):
+    for step in range(start_step, train_steps + 1):
         should_validate = (
             step == 0
             or step == train_steps
@@ -219,6 +398,19 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     "tokens/train": step * batch_tokens,
                     "time/train_seconds": training_time,
                 }, step=step)
+            if checkpoint_enabled and step > 0 and (step == train_steps or not checkpoint_every or step % checkpoint_every == 0):
+                _save_checkpoint(
+                    checkpoint_path,
+                    model=model,
+                    dynmuon=dynmuon,
+                    adamw=adamw,
+                    step=step,
+                    training_time=training_time,
+                    cfg=cfg,
+                    logger=logger,
+                )
+            if _TERMINATE_REQUESTED:
+                return model, logger
             t0 = time.perf_counter()
         if step == train_steps:
             break
@@ -244,21 +436,41 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
         if clip:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+        primary_optimizer = dynmuon if dynmuon is not None else adamw
+        lr_used = primary_optimizer.param_groups[0]["lr"] if primary_optimizer is not None else 0.0
         if dynmuon is not None:
             dynmuon.step(noise_hook=noise_hook)
         if adamw is not None:
             adamw.step()
 
+        completed_step = step + 1
+
         if step % cfg.get("log_every", 10) == 0:
             train_loss = float(sum(losses))
-            lr_now = (base_muon if dynmuon is not None else base_adam) * f
-            print(f"step {step + 1:5d}/{train_steps} | loss {train_loss:.4f} | lr {lr_now:.2e}")
+            print(f"step {completed_step:5d}/{train_steps} | loss {train_loss:.4f} | lr {lr_used:.2e}")
             if logger is not None:
                 logger.log({
                     "train/loss": train_loss,
-                    "lr": lr_now,
-                    "tokens/train": (step + 1) * batch_tokens,
-                }, step=step + 1)
-            log_routing(model, dynmuon, step + 1, logger)
+                    "lr": lr_used,
+                    "tokens/train": completed_step * batch_tokens,
+                }, step=completed_step)
+            if cfg.get("matrix_optimizer") == "relmuon":
+                log_relmuon_scales(model, completed_step, logger, eps=cfg.get("relmuon_eps", 1e-8))
+            log_routing(model, dynmuon, completed_step, logger)
+
+        if _TERMINATE_REQUESTED:
+            training_time += time.perf_counter() - t0
+            if checkpoint_enabled:
+                _save_checkpoint(
+                    checkpoint_path,
+                    model=model,
+                    dynmuon=dynmuon,
+                    adamw=adamw,
+                    step=completed_step,
+                    training_time=training_time,
+                    cfg=cfg,
+                    logger=logger,
+                )
+            return model, logger
 
     return model, logger

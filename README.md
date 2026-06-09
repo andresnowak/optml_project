@@ -235,6 +235,19 @@ metric trajectories to `results/<exp>/history_*.json` for numerical analysis. Pa
   `M += λ·σ₁·z·u₁v₁ᵀ` and check the Stable-Rank router detects the anisotropic spike,
   drops `p` negative, and stays stable while the global schedule destabilizes.
 
+The two scripts below are pure analysis over the `history_*.json` dumps (no GPU,
+no training env) — run them after the experiments above:
+
+- **Depth routing (`depth_routing.png` + `.json`)** — depth-resolved view of how far
+  each layer's routed exponent departs from the shared clock,
+  `mean_t (p_{t,l} − p_t)` vs. block index, one series per matrix type. The clock
+  `p_t` comes from the `global_schedule` run:
+  `python experiments/depth_routing.py --routed results/exp1_spectral_evolution/history_schedule_modulated.json --baseline results/exp1_spectral_evolution/history_global_schedule.json`
+- **Cost table (`cost.md` + `cost.png`)** — per-optimizer best/final val loss, total
+  wall-clock time, ms/step, and both steps- and time-to-target (with `%` vs a
+  reference). Separates "fewer steps" from "cheaper per step":
+  `python experiments/cost_table.py --results-dir results/baselines --reference muon`
+
 ## References
 
 ```bibtex

@@ -17,11 +17,21 @@ import torch
 
 from src import DynMuonRoute, logistic_route, newton_schulz
 from src.optimizers.dynmuon import quintic_newton_schulz
+from src.trainer import lr_factor
 
 torch.manual_seed(0)
 
 SHAPES = [(8, 8), (5, 12), (12, 5), (16, 4), (3, 9)]
 EXPONENTS = [-0.25, 0.0, 0.3, 0.5, 1.0]
+
+
+def test_lr_factor_hits_min_ratio_on_last_update():
+    """The cosine schedule should reach the configured floor on the final update."""
+    train_steps = 1526
+    warmup_steps = 150
+    assert math.isclose(lr_factor(warmup_steps - 1, warmup_steps, train_steps, 0.0), 1.0)
+    assert math.isclose(lr_factor(warmup_steps, warmup_steps, train_steps, 0.0), 1.0)
+    assert math.isclose(lr_factor(train_steps - 1, warmup_steps, train_steps, 0.0), 0.0, abs_tol=1e-12)
 
 
 def _sym_matrix_power(A: torch.Tensor, power: float) -> torch.Tensor:
