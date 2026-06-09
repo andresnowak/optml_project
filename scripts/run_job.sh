@@ -103,7 +103,7 @@ _submit() {
     local job="$1"; shift
     echo "submitting ${job}:"
     printf '  bash %s' "${ENTRY_SH}"; printf ' %q' "$@"; printf '\n'
-    "C:\Users\luca_\OneDrive\Desktop\Unpoditutto\EPFL\MNLP\project\standard-project-m2-moritalians\runai.exe" submit ${BASE_FLAGS} --name "${job}" \
+    runai submit ${BASE_FLAGS} --name "${job}" \
         --command -- bash "${ENTRY_SH}" "$@"
 }
 
@@ -126,11 +126,11 @@ case "${CMD}" in
   baselines)
     _submit "${JOB_PREFIX}-baselines-${STAMP}" "${PROJECT_DIR}/experiments/baselines_step_efficiency.py" "$@" ;;
   logs)
-    "C:\Users\luca_\OneDrive\Desktop\Unpoditutto\EPFL\MNLP\project\standard-project-m2-moritalians\runai.exe" logs "${1:?usage: $0 logs <job-name>}" ;;
+    runai logs "${1:?usage: $0 logs <job-name>}" ;;
   delete)
-    "C:\Users\luca_\OneDrive\Desktop\Unpoditutto\EPFL\MNLP\project\standard-project-m2-moritalians\runai.exe" delete job "${1:?usage: $0 delete <job-name>}" ;;
+    runai delete job "${1:?usage: $0 delete <job-name>}" ;;
   list)
-    "C:\Users\luca_\OneDrive\Desktop\Unpoditutto\EPFL\MNLP\project\standard-project-m2-moritalians\runai.exe" list ;;
+    runai list ;;
   *)
     echo "usage: $0 {prep|prep-fineweb|probe|sanity|single|exp1|exp2|baselines|logs|delete|list} [args]" >&2
     exit 1 ;;
