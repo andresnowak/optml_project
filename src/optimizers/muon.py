@@ -19,7 +19,7 @@ def zeropower_via_newtonschulz5(G: Tensor, ns_steps: int = 12) -> Tensor:
     """Approximate the zeroth power / polar factor with Newton-Schulz steps."""
     if G.ndim < 2:
         raise ValueError(f"Muon expects matrix-like gradients, got shape {tuple(G.shape)}")
-    X = G.bfloat16()
+    X = G.bfloat16()  # Faster Newton-Schulz; empirically close to fp32 for Muon.
     transposed = X.size(-2) > X.size(-1)
     if transposed:
         X = X.mT
