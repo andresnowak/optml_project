@@ -27,10 +27,12 @@ def relmuon_weight_scales(weight: Tensor, scale_mode: str = "log1p", eps: float 
     _validate_scale_mode(scale_mode)
     sv = torch.linalg.svdvals(weight.float()).clamp(min=0.0)
     if scale_mode == "complete":
+        if torch.sqrt(torch.mean(sv.square())) <= eps:
+            return torch.ones_like(sv) # Muon like if the Weights are initialized to 0 (or just to small values)
         return sv
     if scale_mode == "rms":
         rms = torch.sqrt(torch.mean(sv.square()))
-        return (sv + eps) / (rms + eps)
+        return (sv + eps) / (rms + eps) # Muon like if the Weights are 0.
     if scale_mode == "log1p":
         log_scales = torch.log1p(sv)
         rms = torch.sqrt(torch.mean(log_scales.square()))
