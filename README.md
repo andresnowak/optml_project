@@ -137,6 +137,9 @@ Use the preset wrapper to regenerate the main five-project LR bowl. It pulls the
 W&B sweep projects, drops AdamW `1e-4` through `1e-3`, marks each method's best
 plotted point with a star, and writes the CSV/PNG under
 `results/lr_bowls/adamw_filtered_star_best/`.
+It also writes AdamW-target speed plots: the fastest LR per method to reach
+AdamW's best plotted `val/loss` and `train/loss`, once by wall-clock training
+time and once by optimizer steps.
 
 ```bash
 scripts/plot_lr_sweep_bowl.sh
@@ -168,6 +171,10 @@ uv run python experiments/lr_bowl.py \
 Use `--selection best` to plot best-seen losses instead of final losses. The
 legacy grouped-run workflow is still available with `--project <wandb-project>`
 and `--group <wandb-group>`.
+
+By default, the speed plots use `--target-series AdamW`; override this with
+`--target-series <label>` or pass `--no-target-plots` to only regenerate the LR
+bowl.
 
 All customization is done through `configs/*.yaml`; a config `extends:` another and
 overrides selected keys. CLI flags (e.g. `--routing-mode`, `--train-steps`) override

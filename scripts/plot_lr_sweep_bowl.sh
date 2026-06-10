@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plot the main LR sweep bowl from the five W&B sweep projects.
+# Plot the main LR sweep bowl and AdamW-target speed charts from the five W&B sweep projects.
 #
 # Usage:
 #   scripts/plot_lr_sweep_bowl.sh [extra experiments/lr_bowl.py args]

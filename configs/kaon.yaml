@@ -12,3 +12,8 @@ kaon_steps: 5
 kaon_lambda: 4.1
 kaon_output_scale: 1.175
 kaon_eps: 1.0e-7
+
+# Disable repo Muon-style layer shape LR scaling; Kaon's paper scaling is the
+# Frobenius input normalization plus final division by 1.175 above.
+adjust_lr_fn: none
+weight_decay: 0.0

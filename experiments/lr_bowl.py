@@ -13,6 +13,7 @@ import numpy as np
 
 LR_KEYS = ("muon_lr", "adam_lr", "lr")
 DEFAULT_METRICS = ("val/loss", "train/loss")
+TIME_KEY = "time/train_seconds"
 
 
 def _split_csv(values: list[str]) -> list[str]:
@@ -55,12 +56,13 @@ def _lr_value(config: dict, x_key: str) -> tuple[str, float]:
     raise ValueError(f"missing LR config value; tried {', '.join(keys)}")
 
 
-def _metric_history(run, metric: str) -> list[tuple[int | None, float]]:
+def _metric_history(run, metric: str) -> list[tuple[int, float]]:
     rows = []
     for row in run.scan_history(keys=["_step", metric], page_size=1000):
         value = row.get(metric)
-        if value is not None:
-            rows.append((row.get("_step"), float(value)))
+        step = row.get("_step")
+        if value is not None and step is not None:
+            rows.append((int(step), float(value)))
     return rows
 
 
@@ -146,6 +148,99 @@ def _filter_rows(rows: list[dict], exclude_lr_ranges: list[tuple[str, float, flo
     return kept
 
 
+def _first_to_target(history: list[tuple[int, float]], target: float) -> tuple[int, float] | None:
+    for step, value in sorted(history):
+        if value <= target:
+            return step, value
+    return None
+
+
+def _time_at_step(time_history: list[tuple[int, float]], step: int) -> float | None:
+    if not time_history:
+        return None
+    points = sorted(time_history)
+    for time_step, value in points:
+        if time_step == step:
+            return value
+    for (lo_step, lo_time), (hi_step, hi_time) in zip(points, points[1:]):
+        if lo_step <= step <= hi_step and hi_step != lo_step:
+            frac = (step - lo_step) / (hi_step - lo_step)
+            return lo_time + frac * (hi_time - lo_time)
+    return None
+
+
+def _target_for_metric(rows: list[dict], metric: str, selection: str, target_series: str) -> float | None:
+    y_key = f"{selection}_{_metric_name(metric)}"
+    candidates = [float(row[y_key]) for row in rows if row["series"] == target_series and row.get(y_key) != ""]
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+def _target_rows(
+    rows: list[dict],
+    runs_by_key: dict[tuple[str, str], object],
+    metrics: list[str],
+    selection: str,
+    target_series: str,
+) -> list[dict]:
+    targets = {
+        metric: _target_for_metric(rows, metric, selection, target_series)
+        for metric in metrics
+    }
+    out = []
+    history_cache: dict[tuple[tuple[str, str], str], list[tuple[int, float]]] = {}
+
+    def hist(run_key: tuple[str, str], metric: str) -> list[tuple[int, float]]:
+        cache_key = (run_key, metric)
+        if cache_key not in history_cache:
+            history_cache[cache_key] = _metric_history(runs_by_key[run_key], metric)
+        return history_cache[cache_key]
+
+    for row in rows:
+        run_key = (row["project"], row["run_id"])
+        if run_key not in runs_by_key:
+            continue
+        time_history = hist(run_key, TIME_KEY)
+        for metric in metrics:
+            target = targets[metric]
+            if target is None:
+                continue
+            crossing = _first_to_target(hist(run_key, metric), target)
+            step_to_target = crossing[0] if crossing else None
+            value_at_target = crossing[1] if crossing else None
+            time_to_target = _time_at_step(time_history, step_to_target) if step_to_target is not None else None
+            out.append({
+                "metric": metric,
+                "target_series": target_series,
+                "target_loss": target,
+                "series": row["series"],
+                "project": row["project"],
+                "source": row["source"],
+                "run_id": row["run_id"],
+                "run_name": row["run_name"],
+                "lr": row["lr"],
+                "reached": crossing is not None,
+                "step_to_target": step_to_target if step_to_target is not None else "",
+                "time_to_target": time_to_target if time_to_target is not None else "",
+                "value_at_target": value_at_target if value_at_target is not None else "",
+            })
+    return out
+
+
+def _best_target_rows(target_rows: list[dict], field: str, metrics: list[str], series_order: list[str]) -> list[dict]:
+    best = []
+    for metric in metrics:
+        for series in series_order:
+            candidates = [
+                row for row in target_rows
+                if row["metric"] == metric and row["series"] == series and row[field] != ""
+            ]
+            if candidates:
+                best.append(min(candidates, key=lambda row: float(row[field])))
+    return best
+
+
 def _plot_metric(ax, rows: list[dict], metric: str, selection: str) -> None:
     y_key = f"{selection}_{_metric_name(metric)}"
     by_series: dict[str, list[dict]] = defaultdict(list)
@@ -201,6 +296,81 @@ def _plot(path: str, rows: list[dict], metrics: list[str], selection: str, title
     plt.close(fig)
 
 
+def _plot_target_bars(
+    path: str,
+    target_rows: list[dict],
+    metrics: list[str],
+    series_order: list[str],
+    field: str,
+    ylabel: str,
+    title: str,
+) -> None:
+    best_rows = _best_target_rows(target_rows, field, metrics, series_order)
+    by_metric: dict[str, list[dict]] = defaultdict(list)
+    for row in best_rows:
+        by_metric[row["metric"]].append(row)
+
+    fig, axes = plt.subplots(1, len(metrics), figsize=(7 * len(metrics), 4.8), squeeze=False)
+    for ax, metric in zip(axes[0], metrics):
+        metric_rows = by_metric.get(metric, [])
+        names = [row["series"] for row in metric_rows]
+        values = [float(row[field]) for row in metric_rows]
+        bars = ax.bar(names, values)
+        target = metric_rows[0]["target_loss"] if metric_rows else None
+        target_series = metric_rows[0]["target_series"] if metric_rows else ""
+        ax.set_title(f"{metric} to {target_series} target")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, axis="y", alpha=0.25)
+        ax.tick_params(axis="x", rotation=20)
+        if target is not None:
+            ax.text(
+                0.012,
+                0.985,
+                f"target loss = {float(target):.4f}",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8,
+            )
+        for bar, row, value in zip(bars, metric_rows, values):
+            label = f"{value:.1f}" if field == "time_to_target" else f"{int(value)}"
+            ax.annotate(
+                label,
+                (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                textcoords="offset points",
+                xytext=(0, 4),
+                ha="center",
+                fontsize=8,
+            )
+            ax.annotate(
+                f"lr={float(row['lr']):.0e}",
+                (bar.get_x() + bar.get_width() / 2, 0),
+                textcoords="offset points",
+                xytext=(0, 4),
+                ha="center",
+                va="bottom",
+                rotation=90,
+                fontsize=7,
+                color="white",
+            )
+        missing = [series for series in series_order if series not in names]
+        if missing:
+            ax.text(
+                0.988,
+                0.985,
+                "not reached: " + ", ".join(missing),
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=8,
+            )
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--group", action="append", default=[],
@@ -222,6 +392,10 @@ def main() -> None:
     ap.add_argument("--state", action="append", default=["finished"],
                     help="W&B run state to include. Repeat or comma-separate; use 'all' to disable filtering.")
     ap.add_argument("--selection", choices=("final", "best"), default="final")
+    ap.add_argument("--target-series", default="AdamW",
+                    help="Series whose best plotted loss defines the threshold for time/step target plots.")
+    ap.add_argument("--no-target-plots", action="store_true",
+                    help="Only write the LR bowl CSV/PNG; skip Adam-target time/step plots.")
     ap.add_argument("--exclude-lr-range", action="append", default=[],
                     help="Drop rows for a plotted series in inclusive SERIES:LOW:HIGH LR range.")
     ap.add_argument("--out-dir", default="results/lr_bowls")
@@ -247,6 +421,7 @@ def main() -> None:
     import wandb
 
     rows = []
+    runs_by_key = {}
     label_iter = iter(labels)
     path = f"{args.entity}/{args.project}" if args.entity else args.project
     for group in groups:
@@ -260,6 +435,7 @@ def main() -> None:
                 print(f"skipping {group}: {run.name} has state {run.state!r}")
                 continue
             try:
+                runs_by_key[(args.project, run.id)] = run
                 rows.append(_run_row(run, group, label, metrics, args.x_key, args.project, args.selection))
             except ValueError as exc:
                 print(f"skipping {group}: {exc}")
@@ -275,6 +451,7 @@ def main() -> None:
                 print(f"skipping {project}: {run.name} has state {run.state!r}")
                 continue
             try:
+                runs_by_key[(project, run.id)] = run
                 rows.append(_run_row(run, project, label, metrics, args.x_key, project, args.selection))
             except ValueError as exc:
                 print(f"skipping {project}: {exc}")
@@ -294,6 +471,37 @@ def main() -> None:
 
     print(f"wrote {csv_path}")
     print(f"wrote {png_path}")
+    if not args.no_target_plots:
+        target_rows = _target_rows(rows, runs_by_key, metrics, args.selection, args.target_series)
+        if target_rows:
+            target_csv_path = os.path.join(args.out_dir, f"{stem}_{args.target_series}_targets.csv")
+            target_time_path = os.path.join(args.out_dir, f"{stem}_{args.target_series}_target_time.png")
+            target_steps_path = os.path.join(args.out_dir, f"{stem}_{args.target_series}_target_steps.png")
+            series_order = [label for label in labels if label in {row["series"] for row in rows}]
+            _write_csv(target_csv_path, target_rows)
+            _plot_target_bars(
+                target_time_path,
+                target_rows,
+                metrics,
+                series_order,
+                "time_to_target",
+                "training time (s)",
+                f"Fastest wall-clock time to {args.target_series} loss",
+            )
+            _plot_target_bars(
+                target_steps_path,
+                target_rows,
+                metrics,
+                series_order,
+                "step_to_target",
+                "training steps",
+                f"Fastest steps to {args.target_series} loss",
+            )
+            print(f"wrote {target_csv_path}")
+            print(f"wrote {target_time_path}")
+            print(f"wrote {target_steps_path}")
+        else:
+            print(f"warning: no target plots written; no rows found for target series {args.target_series!r}")
     for metric in metrics:
         y_key = f"{args.selection}_{_metric_name(metric)}"
         for series in sorted({r["series"] for r in rows}):
@@ -302,6 +510,18 @@ def main() -> None:
                 continue
             best = min(series_rows, key=lambda r: float(r[y_key]))
             print(f"best {args.selection} {metric} [{series}]: lr={best['lr']:.6g}, loss={float(best[y_key]):.6f}")
+        if not args.no_target_plots:
+            metric_target_rows = [r for r in target_rows if r["metric"] == metric] if target_rows else []
+            for row in _best_target_rows(metric_target_rows, "step_to_target", metrics, labels):
+                print(
+                    f"fastest steps to {args.target_series} {metric} [{row['series']}]: "
+                    f"lr={float(row['lr']):.6g}, step={int(row['step_to_target'])}"
+                )
+            for row in _best_target_rows(metric_target_rows, "time_to_target", metrics, labels):
+                print(
+                    f"fastest time to {args.target_series} {metric} [{row['series']}]: "
+                    f"lr={float(row['lr']):.6g}, time={float(row['time_to_target']):.2f}s"
+                )
 
 
 if __name__ == "__main__":
