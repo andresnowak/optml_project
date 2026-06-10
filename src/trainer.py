@@ -13,8 +13,10 @@ import torch
 from .config import pick_device
 from .data import get_token_batch, iter_microbatches, load_bin, validation_offsets
 from .models import GPT, GPTConfig
+from .models.gpt import Linear
 from .optimizers import build_optimizers
 from .optimizers.dynmuon import DynMuonRoute, _svd
+from .optimizers.input_muon import InputMuon, input_basis_from_activations
 from .optimizers.relmuon import RELMUON_WEIGHT_ONLY_MODES, relmuon_weight_scales
 
 
@@ -71,6 +73,87 @@ class TeeLogger:
             finish = getattr(logger, "finish", None)
             if finish is not None:
                 finish()
+
+
+class InputMuonBasisCollector:
+    """Collect linear-layer inputs and register active-subspace bases."""
+
+    def __init__(self, model: GPT, optimizer: InputMuon, cfg: dict):
+        self.optimizer = optimizer
+        self.rank = int(cfg.get("input_muon_rank", 64))
+        self.update_every = int(cfg.get("input_muon_update_every", 1))
+        self.basis_max_tokens = int(cfg.get("input_muon_basis_max_tokens", 4096))
+        self.center = bool(cfg.get("input_muon_center", False))
+        if self.rank <= 0:
+            raise ValueError(f"input_muon_rank must be positive, got {self.rank}")
+        if self.update_every <= 0:
+            raise ValueError(f"input_muon_update_every must be positive, got {self.update_every}")
+        if self.basis_max_tokens <= 0:
+            raise ValueError(
+                "input_muon_basis_max_tokens must be positive, "
+                f"got {self.basis_max_tokens}"
+            )
+
+        opt_params = {id(p) for group in optimizer.param_groups for p in group["params"]}
+        self._params: dict[Linear, torch.nn.Parameter] = {}
+        self._buffers: dict[torch.nn.Parameter, list[torch.Tensor]] = {}
+        self._counts: dict[torch.nn.Parameter, int] = {}
+        self._handles = []
+        self.enabled = False
+
+        for _, module in model.named_modules():
+            if isinstance(module, Linear) and id(module.weight) in opt_params:
+                self._params[module] = module.weight
+                self._handles.append(module.register_forward_pre_hook(self._hook))
+
+    def close(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+
+    def begin_step(self, step: int) -> None:
+        self.enabled = step % self.update_every == 0
+        self._buffers.clear()
+        self._counts.clear()
+
+    @torch.no_grad()
+    def _hook(self, module: Linear, inputs) -> None:
+        if not self.enabled or not module.training:
+            return
+        if not inputs:
+            return
+        param = self._params.get(module)
+        if param is None:
+            return
+        remaining = self.basis_max_tokens - self._counts.get(param, 0)
+        if remaining <= 0:
+            return
+
+        x = inputs[0].detach()
+        if x.ndim < 2:
+            return
+        rows = x.reshape(-1, x.size(-1))
+        take = min(remaining, rows.size(0))
+        if take < rows.size(0):
+            idx = torch.linspace(0, rows.size(0) - 1, steps=take, device=rows.device).long()
+            rows = rows.index_select(0, idx)
+        self._buffers.setdefault(param, []).append(rows.contiguous())
+        self._counts[param] = self._counts.get(param, 0) + take
+
+    @torch.no_grad()
+    def end_step(self) -> None:
+        if not self.enabled:
+            return
+        for param, chunks in self._buffers.items():
+            if not chunks:
+                continue
+            X = torch.cat(chunks, dim=0)
+            Q = input_basis_from_activations(X, self.rank, center=self.center)
+            if Q.numel() > 0:
+                self.optimizer.set_input_basis(param, Q)
+        self.enabled = False
+        self._buffers.clear()
+        self._counts.clear()
 
 
 def build_arm_logger(cfg: dict, use_wandb: bool, run_name: str, group: str):
@@ -436,7 +519,13 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
     model_cfg = _model_config(cfg)
     model = GPT(model_cfg).to(device)
-    model.compile(dynamic=False)
+    compile_model = bool(cfg.get("compile", True))
+    if cfg.get("matrix_optimizer") == "input_muon" and compile_model:
+        print("input_muon uses forward hooks for input bases; disabling torch.compile")
+        compile_model = False
+        cfg["compile"] = False
+    if compile_model:
+        model.compile(dynamic=False)
 
     print(f"model: {model.num_params() / 1e6:.1f}M non-embedding params")
 
@@ -445,6 +534,11 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
     val_data = load_bin(f"{data_dir}/{cfg.get('val_bin', 'val.bin')}")
 
     dynmuon, adamw = build_optimizers(model, cfg)
+    input_muon_collector = (
+        InputMuonBasisCollector(model, dynmuon, cfg)
+        if isinstance(dynmuon, InputMuon)
+        else None
+    )
 
     checkpoint_enabled = bool(cfg.get("checkpoint_enabled", False))
     checkpoint_path = _checkpoint_path(cfg)
@@ -517,6 +611,8 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     logger=logger,
                 )
             if _TERMINATE_REQUESTED:
+                if input_muon_collector is not None:
+                    input_muon_collector.close()
                 _finish_logger(logger)
                 return model, logger
             t0 = time.perf_counter()
@@ -535,12 +631,16 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
         x, y = get_token_batch(train_data, batch_tokens, cfg["sequence_length"], device)
         losses: list[float] = []
+        if input_muon_collector is not None:
+            input_muon_collector.begin_step(step)
         for xb, yb in iter_microbatches(x, y, mbs):
             with amp_ctx:
                 _, loss = model(xb, yb)
                 loss = loss / (len(x) // mbs)
             loss.backward()
             losses.append(loss.item())
+        if input_muon_collector is not None:
+            input_muon_collector.end_step()
 
         should_log_step = step % cfg.get("log_every", 10) == 0
         weight_update_before = None
@@ -593,8 +693,12 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     cfg=cfg,
                     logger=logger,
                 )
+            if input_muon_collector is not None:
+                input_muon_collector.close()
             _finish_logger(logger)
             return model, logger
 
+    if input_muon_collector is not None:
+        input_muon_collector.close()
     _finish_logger(logger)
     return model, logger

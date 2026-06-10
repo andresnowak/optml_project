@@ -6,6 +6,8 @@ import torch
 from torch import nn
 
 from .dynmuon import DynMuonRoute
+from .input_muon import InputMuon
+from .kaon import Kaon
 from .muon import Muon
 from .param_groups import split_gpt_params
 from .relmuon import RelMuon
@@ -58,6 +60,41 @@ def build_optimizers(model: nn.Module, cfg: dict):
         aux_groups = _adamw_aux_groups(split, cfg)
         adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None
         return muon, adamw
+
+    if matrix_optimizer == "input_muon":
+        split = split_gpt_params(model, routed=False)
+        matrix_params = sorted(split.matrix.get("matrix", []), key=lambda p: p.size(), reverse=True)
+        input_muon = InputMuon(
+            matrix_params,
+            lr=cfg["muon_lr"],
+            weight_decay=cfg.get("weight_decay", 0.0),
+            mu=cfg.get("momentum", 0.95),
+            nesterov=cfg.get("nesterov", True),
+            ns_steps=cfg.get("ns_steps", 12),
+            adjust_lr_fn=cfg.get("adjust_lr_fn", "spectral_norm"),
+        )
+        aux_groups = _adamw_aux_groups(split, cfg)
+        adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None
+        return input_muon, adamw
+
+    if matrix_optimizer == "kaon":
+        split = split_gpt_params(model, routed=False)
+        matrix_params = sorted(split.matrix.get("matrix", []), key=lambda p: p.size(), reverse=True)
+        kaon = Kaon(
+            matrix_params,
+            lr=cfg["muon_lr"],
+            weight_decay=cfg.get("weight_decay", 0.0),
+            mu=cfg.get("momentum", 0.95),
+            nesterov=cfg.get("nesterov", True),
+            adjust_lr_fn=cfg.get("adjust_lr_fn", "spectral_norm"),
+            chaos_steps=cfg.get("kaon_steps", 5),
+            chaos_lambda=cfg.get("kaon_lambda", 4.1),
+            output_scale=cfg.get("kaon_output_scale", 1.175),
+            eps=cfg.get("kaon_eps", 1e-7),
+        )
+        aux_groups = _adamw_aux_groups(split, cfg)
+        adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None
+        return kaon, adamw
 
     if matrix_optimizer == "relmuon":
         split = split_gpt_params(model, routed=False)

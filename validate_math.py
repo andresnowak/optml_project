@@ -15,16 +15,20 @@ Run with:  pytest validate_math.py
 from __future__ import annotations
 
 import math
+import copy
 
 import pytest
 import torch
 
-from src import DynMuonRoute, logistic_route, newton_schulz
+from src import DynMuonRoute, Kaon, logistic_route, newton_schulz
 from src.optimizers.dynmuon import (
     logistic_schedule_p,
     quintic_newton_schulz,
     shape_exact_svd,
 )
+from src.optimizers.input_muon import input_basis_from_activations, input_muon_update
+from src.optimizers.kaon import kaon_chaos_map, kaon_update
+from src.optimizers.muon import muon_update
 from src.optimizers.relmuon import (
     relmuon_aligned_scales,
     relmuon_update,
@@ -120,6 +124,40 @@ def test_quintic_newton_schulz_approximates_polar(shape):
     Y = quintic_newton_schulz(X_n)
     rel = torch.linalg.norm(Y - polar) / torch.linalg.norm(polar)
     assert rel < 0.1, f"quintic NS too far from polar: {rel}"
+
+
+def test_input_muon_full_basis_matches_muon():
+    """With Q = I, InputMuon should reduce to standard Muon."""
+    G = torch.randn(6, 10)
+    Q = torch.eye(G.size(1))
+    momentum_muon = torch.zeros_like(G)
+    momentum_input = torch.zeros_like(G)
+
+    ref = muon_update(G, momentum_muon, mu=0.0, nesterov=False, ns_steps=12)
+    got = input_muon_update(G, momentum_input, Q, mu=0.0, nesterov=False, ns_steps=12)
+
+    assert torch.allclose(got.float(), ref.float(), atol=5e-3, rtol=5e-3)
+
+
+def test_input_muon_update_stays_in_input_subspace():
+    """The lifted update should have no right-space component outside span(Q)."""
+    G = torch.randn(7, 11)
+    Q, _ = torch.linalg.qr(torch.randn(G.size(1), 3), mode="reduced")
+    momentum = torch.zeros_like(G)
+
+    update = input_muon_update(G, momentum, Q, mu=0.0, nesterov=False, ns_steps=12)
+    projector_complement = torch.eye(G.size(1)) - Q @ Q.mT
+
+    assert torch.linalg.norm(update @ projector_complement) <= 1e-5
+
+
+def test_input_basis_from_activations_returns_orthonormal_columns():
+    """Activation SVD helper should return a valid right input basis."""
+    X = torch.randn(4, 5, 9)
+    Q = input_basis_from_activations(X, rank=4)
+
+    assert Q.shape == (9, 4)
+    assert torch.allclose(Q.mT @ Q, torch.eye(4), atol=1e-5, rtol=1e-5)
 
 
 def test_stable_rank_identity():
@@ -247,6 +285,47 @@ def test_spectrum_random_is_norm_preserving_and_reproducible():
     assert torch.equal(a, b)
     assert not torch.equal(a, c)
     assert math.isclose(float(torch.linalg.norm(a)), float(torch.linalg.norm(g)), rel_tol=1e-5)
+
+
+def test_kaon_update_is_deterministic_chaotic_map():
+    """Kaon applies the deterministic chaotic spectral map to the momentum update."""
+    torch.manual_seed(99)
+    g = torch.randn(6, 10)
+    momentum_a = torch.zeros_like(g)
+    momentum_b = torch.zeros_like(g)
+
+    got = kaon_update(g, momentum_a, mu=0.0, nesterov=False)
+    repeat = kaon_update(g, momentum_b, mu=0.0, nesterov=False)
+    ref = kaon_chaos_map(g)
+
+    assert torch.equal(got, repeat)
+    assert torch.equal(got, ref.to(dtype=g.dtype))
+    assert got.shape == g.shape
+    assert torch.isfinite(got).all()
+
+
+def test_kaon_optimizer_state_restores_momentum():
+    """Checkpointing Kaon preserves momentum state across continuation."""
+    torch.manual_seed(100)
+    g1 = torch.randn(5, 8)
+    g2 = torch.randn(5, 8)
+
+    w1 = torch.zeros(5, 8, requires_grad=True)
+    opt1 = Kaon([w1], lr=1.0, mu=0.9, nesterov=False, adjust_lr_fn=None)
+    w1.grad = g1.clone()
+    opt1.step()
+    state = copy.deepcopy(opt1.state_dict())
+    checkpoint_weight = w1.detach().clone()
+    w1.grad = g2.clone()
+    opt1.step()
+    expected = w1.detach().clone()
+
+    w2 = checkpoint_weight.clone().requires_grad_(True)
+    opt2 = Kaon([w2], lr=1.0, mu=0.9, nesterov=False, adjust_lr_fn=None)
+    opt2.load_state_dict(state)
+    w2.grad = g2.clone()
+    opt2.step()
+    assert torch.equal(w2.detach(), expected)
 
 
 def test_weight_decay_is_decoupled():

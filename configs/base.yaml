@@ -3,6 +3,7 @@
 
 device: auto
 seed: 0
+compile: true
 data_dir: data/wikitext103
 train_bin: train.bin
 val_bin: val.bin
@@ -53,6 +54,10 @@ muon_lr: 2.0e-2            # max matrix LR
 adam_lr: 6.0e-4           # embeddings / norms / biases
 weight_decay: 0.1         # decoupled; applies to ALL matrix optimizers (incl. dynmuon)
 scalar_weight_decay: 0.0  # embeddings / biases / norm gains
+input_muon_rank: 64       # top input-subspace directions per matrix layer
+input_muon_update_every: 1
+input_muon_basis_max_tokens: 4096
+input_muon_center: false
 
 # schedule
 warmup_steps: 150

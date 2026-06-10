@@ -36,6 +36,9 @@ def main() -> None:
     ap.add_argument("--relmuon-scale-mode", dest="relmuon_scale_mode",
                     choices=["log1p", "rms", "complete", "log1p_aligned"])
     ap.add_argument("--relmuon-scale-cap", dest="relmuon_scale_cap", type=float)
+    ap.add_argument("--kaon-steps", dest="kaon_steps", type=int)
+    ap.add_argument("--kaon-lambda", dest="kaon_lambda", type=float)
+    ap.add_argument("--kaon-output-scale", dest="kaon_output_scale", type=float)
     ap.add_argument("--noise-lambda", dest="noise_lambda", type=float)
     ap.add_argument("--beta", type=float)
     ap.add_argument("--modulate-metric", dest="modulate_metric",
@@ -46,6 +49,13 @@ def main() -> None:
     ap.add_argument("--wandb-project", dest="wandb_project")
     ap.add_argument("--wandb-entity", dest="wandb_entity")
     ap.add_argument("--device")
+    ap.add_argument("--compile", dest="compile",
+                    action=argparse.BooleanOptionalAction)
+    ap.add_argument("--input-muon-rank", dest="input_muon_rank", type=int)
+    ap.add_argument("--input-muon-update-every", dest="input_muon_update_every", type=int)
+    ap.add_argument("--input-muon-basis-max-tokens", dest="input_muon_basis_max_tokens", type=int)
+    ap.add_argument("--input-muon-center", dest="input_muon_center",
+                    action=argparse.BooleanOptionalAction)
     ap.add_argument("--wandb", action="store_true", default=None)
     args = ap.parse_args()
     overrides = {k: v for k, v in vars(args).items() if k != "config"}
