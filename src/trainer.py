@@ -667,7 +667,9 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     "lr": lr_used,
                     "tokens/train": completed_step * batch_tokens,
                 }, step=completed_step)
-            if cfg.get("log_weight_svd", False) and cfg.get("matrix_optimizer") in ("muon", "relmuon", "dynmuon"):
+            if cfg.get("log_weight_svd", False) and cfg.get("matrix_optimizer") in (
+                "muon", "relmuon", "dynmuon", "input_muon", "kaon",
+            ):
                 log_matrix_weight_spectra(
                     model,
                     completed_step,
