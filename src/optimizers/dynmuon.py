@@ -45,7 +45,7 @@ ROUTING_MODES = (
 PROXY_METRICS = ("stable_rank", "snr", "alignment")
 COMPUTE_MODES = ("svd", "ns")
 NS_VARIANTS = ("quintic", "cubic")
-SPECTRUM_MODES = ("power", "relmuon", "random_uniform", "inverted")
+SPECTRUM_MODES = ("power", "relmuon", "relmuon_log1p", "random_uniform", "inverted")
 
 # Tuned quintic Newton-Schulz coefficients from the reference DynMuon/Dion repo.
 # Each row (a, b, c) applies X <- a X + b (X Xᵀ) X + c (X Xᵀ)² X for one iteration.
@@ -345,6 +345,13 @@ class DynMuonRoute(torch.optim.Optimizer):
 
         if transposed:
             D = D.transpose(0, 1)
+        lr_scale = _shape_lr_scale(fan_out, fan_in, group["adjust_lr_fn"])
+        p.add_(D.reshape(orig_shape), alpha=-group["lr"] * lr_scale)
+
+        state.update(last_p=float(p_exp), last_sr=float(sr),
+                     last_gamma=float(gamma), last_alpha=float(alpha))
+        return x
+          D = D.transpose(0, 1)
         lr_scale = _shape_lr_scale(fan_out, fan_in, group["adjust_lr_fn"])
         p.add_(D.reshape(orig_shape), alpha=-group["lr"] * lr_scale)
 
