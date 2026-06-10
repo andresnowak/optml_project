@@ -171,9 +171,9 @@ def _save_checkpoint(
 
 def _restore_rng_state(ckpt: dict) -> None:
     if ckpt.get("torch_rng_state") is not None:
-        torch.set_rng_state(ckpt["torch_rng_state"])
+        torch.set_rng_state(ckpt["torch_rng_state"].cpu())
     if ckpt.get("cuda_rng_state_all") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(ckpt["cuda_rng_state_all"])
+        torch.cuda.set_rng_state_all([s.cpu() for s in ckpt["cuda_rng_state_all"]])
 
 
 def _wandb_run_id(logger) -> str | None:
