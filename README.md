@@ -131,6 +131,44 @@ scripts/sweep.sh proxy --modulate-metric stable_rank,alignment --config configs/
 For boolean knobs (e.g. `--dynamic-ref` vs `--no-dynamic-ref`) just submit the two
 `single` runs directly with a shared `--wandb-group`.
 
+### LR sweep bowl plots
+
+Use the preset wrapper to regenerate the main five-project LR bowl. It pulls the
+W&B sweep projects, drops AdamW `1e-4` through `1e-3`, marks each method's best
+plotted point with a star, and writes the CSV/PNG under
+`results/lr_bowls/adamw_filtered_star_best/`.
+
+```bash
+scripts/plot_lr_sweep_bowl.sh
+```
+
+For custom W&B projects, call the plotting script directly. Pass projects as a
+list with `--sweep-projects`; pass matching display names with `--labels` in the
+same order.
+
+```bash
+uv run python experiments/lr_bowl.py \
+  --sweep-projects relmuon-rms-lr-sweep adam-lr-sweep muon-lr-sweep \
+  --labels RelMuon-RMS AdamW Muon \
+  --entity cs-439-project \
+  --selection final \
+  --exclude-lr-range AdamW:1e-4:1e-3 \
+  --out-dir results/lr_bowls/custom
+```
+
+Comma-separated lists also work:
+
+```bash
+uv run python experiments/lr_bowl.py \
+  --sweep-projects relmuon-rms-lr-sweep,adam-lr-sweep,muon-lr-sweep \
+  --labels RelMuon-RMS,AdamW,Muon \
+  --out-dir results/lr_bowls/custom
+```
+
+Use `--selection best` to plot best-seen losses instead of final losses. The
+legacy grouped-run workflow is still available with `--project <wandb-project>`
+and `--group <wandb-group>`.
+
 All customization is done through `configs/*.yaml`; a config `extends:` another and
 overrides selected keys. CLI flags (e.g. `--routing-mode`, `--train-steps`) override
 the YAML for ad-hoc runs.
