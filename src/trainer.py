@@ -151,6 +151,7 @@ class InputMuonBasisCollector:
             Q = input_basis_from_activations(X, self.rank, center=self.center)
             if Q.numel() > 0:
                 self.optimizer.set_input_basis(param, Q)
+                self.optimizer.state[param]["last_basis_rank"] = Q.size(1)
         self.enabled = False
         self._buffers.clear()
         self._counts.clear()
@@ -322,6 +323,41 @@ def log_routing(model: GPT, dynmuon: DynMuonRoute | None, step: int, logger) -> 
                 if not math.isnan(value):
                     payload[f"route/{label}/{n}"] = value
     logger.log(payload, step=step)
+
+
+def log_input_muon(model: GPT, optimizer: InputMuon | None, step: int, logger) -> None:
+    """Log InputMuon basis and projection diagnostics."""
+    if logger is None or not isinstance(optimizer, InputMuon):
+        return
+    by_type: dict[str, dict[str, list[float]]] = {}
+    for name, p in model.named_parameters():
+        layer_type = _matrix_layer_type(name)
+        if layer_type is None:
+            continue
+        st = optimizer.state.get(p)
+        if not st:
+            continue
+        bucket = by_type.setdefault(layer_type, {
+            "basis_rank": [],
+            "projected_grad_fraction": [],
+        })
+        if "last_basis_rank" in st:
+            bucket["basis_rank"].append(float(st["last_basis_rank"]))
+        if "last_projected_grad_fraction" in st:
+            bucket["projected_grad_fraction"].append(float(st["last_projected_grad_fraction"]))
+
+    payload = {}
+    all_values: dict[str, list[float]] = {}
+    for layer_type, stats in by_type.items():
+        for key, values in stats.items():
+            if not values:
+                continue
+            payload[f"input_muon/{layer_type}/{key}/mean"] = float(sum(values) / len(values))
+            all_values.setdefault(key, []).extend(values)
+    for key, values in all_values.items():
+        payload[f"input_muon/all/{key}/mean"] = float(sum(values) / len(values))
+    if payload:
+        logger.log(payload, step=step)
 
 
 def _matrix_layer_type(name: str) -> str | None:
@@ -680,6 +716,7 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                 )
             if cfg.get("log_weight_update_ratio", False) and weight_update_before is not None:
                 log_matrix_update_ratios(model, weight_update_before, completed_step, logger)
+            log_input_muon(model, dynmuon, completed_step, logger)
             log_routing(model, dynmuon, completed_step, logger)
 
         if _TERMINATE_REQUESTED:

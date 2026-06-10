@@ -171,10 +171,27 @@ class InputMuon(torch.optim.Optimizer):
                 state = self.state[p]
                 if "momentum" not in state:
                     state["momentum"] = torch.zeros_like(p)
+                basis = state.get("input_basis")
+                if basis is not None:
+                    Q = _validate_input_basis(basis, p.grad)
+                    momentum_preview = state["momentum"].lerp(p.grad, 1.0 - group["mu"])
+                    update_preview = (
+                        p.grad.lerp(momentum_preview, group["mu"])
+                        if group["nesterov"]
+                        else momentum_preview
+                    )
+                    # Fraction of the momentum gradient kept by the input
+                    # projector: ||M Q Q^T||_F / ||M||_F.
+                    projected = update_preview.float() @ Q
+                    state["last_projected_grad_fraction"] = (
+                        projected.norm() / (update_preview.float().norm() + 1e-12)
+                    ).item()
+                else:
+                    state.pop("last_projected_grad_fraction", None)
                 update = input_muon_update(
                     p.grad,
                     state["momentum"],
-                    state.get("input_basis"),
+                    basis,
                     mu=group["mu"],
                     nesterov=group["nesterov"],
                     ns_steps=group["ns_steps"],
