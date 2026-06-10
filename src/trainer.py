@@ -15,7 +15,7 @@ from .data import get_token_batch, iter_microbatches, load_bin, validation_offse
 from .models import GPT, GPTConfig
 from .optimizers import build_optimizers
 from .optimizers.dynmuon import DynMuonRoute, _svd
-from .optimizers.relmuon import relmuon_weight_scales
+from .optimizers.relmuon import RELMUON_WEIGHT_ONLY_MODES, relmuon_weight_scales
 
 
 _TERMINATE_REQUESTED = False
@@ -217,9 +217,11 @@ def log_routing(model: GPT, dynmuon: DynMuonRoute | None, step: int, logger) -> 
             n = name_of.get(id(p), "?")
             payload[f"route/group/{group_name}/p/{n}"] = st["last_p"]
             payload[f"route/p/{n}"] = st["last_p"]
-            payload[f"route/sr/{n}"] = st["last_sr"]
-            payload[f"route/gamma/{n}"] = st["last_gamma"]
-            payload[f"route/alpha/{n}"] = st["last_alpha"]
+            for key, label in (("last_sr", "sr"), ("last_gamma", "gamma"),
+                               ("last_gamma_ema", "gamma_ema"), ("last_alpha", "alpha")):
+                value = st.get(key, float("nan"))
+                if not math.isnan(value):
+                    payload[f"route/{label}/{n}"] = value
     logger.log(payload, step=step)
 
 
@@ -328,7 +330,9 @@ def log_matrix_weight_spectra(
             continue
         sv = torch.linalg.svdvals(p.detach().float())
         sv_by_type.setdefault(layer_type, []).append(sv)
-        if log_relmuon_scales:
+        # Aligned scales depend on the update direction, not just the weight,
+        # so they cannot be reproduced here; log weight-only modes.
+        if log_relmuon_scales and relmuon_scale_mode in RELMUON_WEIGHT_ONLY_MODES:
             scales = relmuon_weight_scales(p.detach(), scale_mode=relmuon_scale_mode, eps=eps)
             scale_by_type.setdefault(layer_type, []).append(scales)
 

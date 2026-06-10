@@ -1,0 +1,550 @@
+\documentclass{article}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{lmodern}        % scalable fonts (required by microtype)
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{microtype}      % microtypography
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{booktabs}
+
+\newtheorem{lemma}{Lemma}
+\newtheorem{remark}{Remark}
+\newtheorem{definition}{Definition}
+
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\clip}{clip}
+\DeclareMathOperator*{\srank}{sr}
+
+\title{DynMuon-Route: Dynamic Layer-wise Spectral-Exponent Routing for Muon\\
+\large A precise mathematical specification}
+
+\author{Matteo Caviglia}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We give a precise, implementation-faithful mathematical specification of a
+family of optimizers that shape the singular-value spectrum of the momentum
+matrix: Muon, the released DynMuon baseline, our per-layer router
+DynMuon-Route, and RelMuon. Every statement in this document corresponds to
+code in \texttt{src/optimizers/} and is verified by the unit tests in
+\texttt{validate\_math.py}; the claim that our DynMuon baseline reproduces the
+released reference implementation is verified \emph{numerically, to bitwise
+equality}, against vendored reference code in
+\texttt{validate\_reference.py}. We also make explicit two facts that are
+essential for interpreting experiments and that informal treatments omit:
+(i) the released DynMuon does \emph{not} apply a continuous spectral power but
+a three-phase transform, and (ii) the Frobenius norm of the shaped update
+varies by a factor of order $\sqrt{\min(m,n)}$ as the exponent moves from $1$
+to $0$, so any exponent schedule is simultaneously an implicit learning-rate
+schedule unless magnitude is explicitly controlled.
+\end{abstract}
+
+\section{Setup and notation}
+
+Fix one matrix parameter $W \in \mathbb{R}^{m \times n}$ (a hidden linear
+layer; embeddings, output heads, biases and gains are excluded and optimized
+by AdamW, following standard Muon practice~\cite{jordan2024muon}). Let
+$G_t = \nabla_W \mathcal{L}_t$ be the stochastic gradient at step
+$t = 1, 2, \dots$ The momentum buffer $B_t$ and the (Nesterov) momentum
+matrix $M_t$ are
+\begin{equation}
+\label{eq:momentum}
+B_t = \mu B_{t-1} + G_t, \qquad B_0 = 0, \qquad
+M_t = \begin{cases} G_t + \mu B_t & \text{(Nesterov, default)}\\
+B_t & \text{otherwise,}\end{cases}
+\end{equation}
+with $\mu = 0.95$ by default. Note the buffer is the \emph{sum} form (not an
+exponential moving average): $\|B_t\|$ approaches $\|G\|/(1-\mu)$ for
+stationary gradients. This matches the reference DynMuon exactly.
+
+Throughout, $M = U \Sigma V^\top$ denotes a \emph{thin} SVD: for
+$k = \min(m,n)$, $U \in \mathbb{R}^{m\times k}$ and $V \in \mathbb{R}^{n\times k}$
+have orthonormal columns (they are semi-orthogonal, not orthogonal, unless
+$m=n$), and $\Sigma = \diag(\sigma_1 \ge \dots \ge \sigma_k \ge 0)$ holds the
+singular values \emph{of the raw momentum matrix} $M$.
+
+Every optimizer below produces a shaped direction $D_t$ and applies the
+decoupled update
+\begin{equation}
+\label{eq:update}
+W_t = \bigl(1 - \eta\,\lambda\bigr) W_{t-1} \;-\; \eta\,
+c(m,n)\, D_t ,
+\end{equation}
+where $\eta$ is the base learning rate, $\lambda$ the decoupled weight-decay
+coefficient (applied at the \emph{base} learning rate, as in the reference),
+and $c(m,n)$ a shape-dependent learning-rate adjustment:
+\begin{equation}
+\label{eq:adjust}
+c_{\mathrm{spectral}}(m,n) = \sqrt{m/n}
+\quad\text{\cite{bernstein2023spectral}}, \qquad
+c_{\mathrm{rms}}(m,n) = 0.2\,\sqrt{\max(m,n)}
+\quad\text{\cite{liu2025muonscalable}},
+\end{equation}
+with $m$ the fan-out and $n$ the fan-in. The default is
+$c_{\mathrm{spectral}}$, matching the reference.
+
+\section{The spectral shaping family}
+
+\begin{definition}[Spectral power shaping]
+\label{def:dp}
+For an exponent $p \in \mathbb{R}$, define
+\begin{equation}
+\label{eq:dp}
+D(p) \;=\; U\, \Sigma^{p}\, V^\top
+\;=\; \sum_{i=1}^{k} \sigma_i^{\,p}\, u_i v_i^\top ,
+\end{equation}
+where the power acts on the \textbf{raw} singular values of $M$, with the
+\emph{pseudo-power} convention: singular values below the numerical-rank
+tolerance $\sigma_{\max}\cdot\max(m,n)\cdot\varepsilon_{\mathrm{fp32}}$ are
+treated as exact zeros and their terms are dropped. For $p \le 0$ this is the
+only mathematically meaningful continuation (it agrees with the
+Moore--Penrose convention at $p=-1$ and with the polar factor of the
+row-space restriction at $p = 0$); without it, $p<0$ would amplify
+numerically-null directions without bound.
+\end{definition}
+
+The family interpolates between known optimizers:
+\begin{itemize}
+\item $p = 1$: $D(1) = M$. Plain (Nesterov) SGD with momentum --- the raw
+update, including its raw magnitude.
+\item $p = 0$: $D(0) = U V^\top$, the orthogonal polar factor: all nonzero
+singular values are flattened to $1$. This is exactly the Muon
+update~\cite{jordan2024muon}.
+\item $p < 0$: directions with large gradient energy are \emph{suppressed}
+and directions with small (but nonzero) energy are \emph{amplified}. We
+deliberately say ``gradient energy'', not curvature: $\Sigma$ is the spectrum
+of the momentum, not of the Hessian. The connection to curvature is a
+modeling assumption argued by DynMuon~\cite{wu2026dynmuon}, not an identity.
+\end{itemize}
+
+\begin{remark}[Normalized vs.\ raw spectrum]
+\label{rem:backscale}
+For any $s>0$, $M = s \cdot (M/s)$ has the same singular vectors and scaled
+singular values, hence
+\begin{equation}
+\label{eq:backscale}
+U \Sigma^p V^\top \;=\; s^{\,p}\; U \bigl(\Sigma/s\bigr)^{p} V^\top .
+\end{equation}
+The reference implementation normalizes by $s = \|M\|_F$ for numerical
+conditioning and multiplies the result back by $\|M\|_F^{\,p}$; both sides of
+\eqref{eq:backscale} are therefore the same object
+(test \texttt{test\_raw\_spectrum\_backscale\_identity}). An implementation
+that shapes the normalized spectrum \emph{without} the back-scale computes a
+different optimizer, $D(p)/\|M\|_F^{\,p}$, whose $p=1$ endpoint is
+\emph{normalized} gradient descent; our earlier implementation had this
+discrepancy and it has been removed.
+\end{remark}
+
+\begin{lemma}[Gram-factor identity]
+\label{lem:gram}
+Orient $M$ so that $m \le n$ (transpose otherwise; the implementation does).
+Let $X_n = M / \|M\|_F$, let $A = X_n X_n^\top \in \mathbb{R}^{m\times m}$ be
+the (small-side) Gram matrix with eigendecomposition $A = Q \Lambda Q^\top$,
+and let $UV^\top$ be the polar factor of $X_n$. Then, under the pseudo-power
+convention,
+\begin{equation}
+\label{eq:gram}
+U \Sigma^p V^\top \;=\; \|M\|_F^{\,p}\; \bigl(Q\,\Lambda^{p/2}\,Q^\top\bigr)\,
+\bigl(U V^\top\bigr).
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+Write the thin SVD $X_n = U \Sigma_n V^\top$ with
+$\Sigma_n = \Sigma / \|M\|_F$. Then $A = U \Sigma_n^2 U^\top$, and since
+$m \le n$ the columns of $U$ can be completed to an eigenbasis of $A$
+(eigenvalue $0$ on the complement, which the pseudo-power sends to $0$).
+Hence $A^{p/2} = U \Sigma_n^{p} U^\top$ on the row space, and
+$A^{p/2}\, U V^\top = U \Sigma_n^{p}\, U^\top U\, V^\top
+= U \Sigma_n^{p} V^\top$. Multiplying by $\|M\|_F^{\,p}$ and applying
+\eqref{eq:backscale} gives \eqref{eq:gram}.
+\end{proof}
+
+In practice the polar factor in \eqref{eq:gram} is approximated by
+Newton--Schulz (Section~\ref{sec:ns}) while $A^{p/2}$ is either computed
+exactly from the $m\times m$ eigendecomposition (\texttt{compute\_mode="ns"})
+or approximated by a Taylor polynomial (the reference path,
+Section~\ref{sec:reference}). \texttt{compute\_mode="svd"} evaluates
+\eqref{eq:dp} directly and serves as ground truth
+(test \texttt{test\_optimizer\_ns\_matches\_svd}).
+
+\subsection{Update magnitude is coupled to the exponent}
+\label{sec:magnitude}
+
+\begin{lemma}[Norm of the shaped update]
+\label{lem:norm}
+$\displaystyle \|D(p)\|_F = \Bigl(\sum_{i=1}^{r} \sigma_i^{2p}\Bigr)^{1/2}$,
+where $r$ is the numerical rank. In particular, for a full-rank matrix
+normalized to $\|M\|_F = 1$,
+$\|D(1)\|_F = 1$ while $\|D(0)\|_F = \sqrt{k}$, and for an approximately flat
+spectrum $\|D(p)\|_F$ grows monotonically as $p$ decreases below $0$.
+\end{lemma}
+
+\begin{proof}
+Immediate from \eqref{eq:dp} and the orthonormality of $\{u_i v_i^\top\}$ in
+the Frobenius inner product.
+\end{proof}
+
+For our $768$-dimensional layers, $\sqrt{k} \approx 28$: moving $p$ from $1$
+to $0$ at a fixed learning rate multiplies the update magnitude by more than
+an order of magnitude, and $p=-0.25$ adds another factor of $2$--$3$.
+\textbf{Any schedule or router acting on $p$ therefore modulates the
+effective per-layer learning rate at least as strongly as it modulates the
+update geometry.} This is consistent with the finding of
+\cite{liu2026notspecial} that Muon-like performance is governed primarily by
+alignment and step-size control rather than by the precise spectrum. To
+separate the two mechanisms we define the magnitude-decoupled variant
+(\texttt{magnitude="polar\_fro"}):
+\begin{equation}
+\label{eq:polarfro}
+\widehat{D}(p) \;=\; \sqrt{k}\;\frac{D(p)}{\|D(p)\|_F},
+\end{equation}
+which pins every update to the Frobenius norm of an exact polar factor
+($\widehat D(0) = D(0)$ for full-rank $M$), so that $p$ changes only the
+\emph{shape} of the spectrum. Experiments that claim a geometric effect of
+$p$ must hold under \eqref{eq:polarfro}; experiments without it measure the
+joint effect of shape and implicit step size.
+
+\section{The reference DynMuon baseline}
+\label{sec:reference}
+
+\subsection{Global exponent schedule}
+
+DynMuon~\cite{wu2026dynmuon} anneals a single global exponent with a logistic
+schedule. With $t = 1, 2, \dots$ (the step counter starts at $1$ on the first
+optimizer step) and horizon $T$,
+\begin{equation}
+\label{eq:schedule}
+q_t = t / T, \qquad
+p_t \;=\; p_{\min} + \frac{p_{\max} - p_{\min}}
+{1 + \exp\!\bigl((q_t - \tau)/w\bigr)},
+\end{equation}
+with defaults $p_{\max}=1$, $p_{\min}=-0.25$, $\tau = w = 0.04$. The schedule
+decreases from $\approx p_{\max}$ to $\approx p_{\min}$, crossing
+$p_t = 0.25$ at $q_t = \tau + w \ln\frac{3}{2} \approx 0.056$ and $p_t = 0$
+at $q_t = \tau + w \ln 4 \approx 0.095$.
+
+\subsection{The three-phase transform}
+
+The released implementation does \emph{not} evaluate \eqref{eq:dp} for all
+$p$. It applies
+\begin{equation}
+\label{eq:threephase}
+\mathcal{T}(M, p) \;=\;
+\begin{cases}
+M & p \ge 0.25 \quad\text{(raw SGD-momentum step)}\\[2pt]
+\mathrm{NS}_5(M) & 0 \le p < 0.25 \quad\text{(plain Muon)}\\[2pt]
+\mathrm{FS}(M, p) & p < 0 \quad\text{(\texttt{fast\_spectral}, below)}
+\end{cases}
+\end{equation}
+where $\mathrm{NS}_5$ is the five-step quintic Newton--Schulz polar
+approximation (Section~\ref{sec:ns}, computed in \texttt{bfloat16}). With the
+default schedule, training therefore consists of $\approx 5.6\%$ raw momentum
+steps, $\approx 3.9\%$ Muon steps, and $\approx 90\%$ negative-exponent
+steps with $p_t \to -0.25$. Our \texttt{compute\_mode="reference"} reproduces
+\eqref{eq:threephase} including all dtype conversions; the full optimizer
+trajectory is bitwise identical to the vendored reference code
+(\texttt{validate\_reference.py}).
+
+\subsection{\texttt{fast\_spectral}: Taylor-corrected negative powers}
+
+For $p<0$ the reference evaluates \eqref{eq:gram} with a second-order Taylor
+approximation of the Gram power. Let $\delta = p/2$, $X_n = M/(\|M\|_F +
+\epsilon)$, $A = X_n X_n^\top$ and $E = A - I$. Since
+$(I + E)^{\delta} = I + \delta E + \tfrac{\delta(\delta-1)}{2} E^2 +
+O(\|E\|^3)$ (binomial series, convergent for $\|E\|_2 \le 1$, which holds
+because the eigenvalues of $A$ lie in $[0, 1]$ after Frobenius
+normalization),
+\begin{equation}
+\label{eq:fastspectral}
+\mathrm{FS}(M, p) \;=\;
+\Bigl(I + \delta E + \tfrac{1}{2}\delta(\delta - 1)\,E^2\Bigr)\,
+\mathrm{NS}_5(X_n)\;\cdot\;(\|M\|_F + \epsilon)^{\,p}.
+\end{equation}
+
+\begin{remark}[The truncation is an implicit regularizer]
+\label{rem:taylor}
+The exact power $\lambda^{\delta}$ diverges as $\lambda \to 0^+$ for
+$\delta < 0$. The truncated polynomial instead takes the finite value
+$1 - \delta + \tfrac{1}{2}\delta(\delta - 1)$ at $\lambda = 0$ (e.g.\
+$\approx 1.20$ for $p = -0.25$). The reference therefore amplifies weak
+directions only mildly and never blows up on rank-deficient momenta --- a
+property the exact SVD path achieves instead through the pseudo-power rank
+tolerance of Definition~\ref{def:dp}
+(test \texttt{test\_pseudo\_power\_handles\_rank\_deficiency}). The price is
+accuracy: \eqref{eq:fastspectral} matches $\lambda^\delta$ to
+$O(|1-\lambda|^3)$ only near $\lambda = 1$.
+\end{remark}
+
+\section{Newton--Schulz iterations}
+\label{sec:ns}
+
+The textbook cubic iteration on a matrix $Y_0$ with singular values in
+$(0, \sqrt{3})$,
+\begin{equation}
+\label{eq:cubic}
+Y_{j+1} = \tfrac{3}{2} Y_j - \tfrac{1}{2} (Y_j Y_j^\top)\, Y_j,
+\end{equation}
+maps each singular value by $\phi(\sigma) = \tfrac32\sigma -
+\tfrac12\sigma^3$, a contraction toward the fixed point $1$ on
+$(0,\sqrt3)$; Frobenius normalization guarantees $\sigma \le 1$, so
+\eqref{eq:cubic} converges to the polar factor $UV^\top$ on the numerical row
+space. The reference instead uses five \emph{tuned quintic} steps
+\begin{equation}
+\label{eq:quintic}
+Y_{j+1} = a_j Y_j + b_j (Y_jY_j^\top) Y_j + c_j (Y_jY_j^\top)^2 Y_j,
+\end{equation}
+with the coefficient schedule of \cite{jordan2024modded} (first row
+$(4.0848, -6.8946, 2.9270)$, \dots). These coefficients trade asymptotic
+convergence for a fast, slope-controlled push of small singular values toward
+$1$ in exactly five iterations; the result is a coarse polar approximation
+(relative error up to $\approx 10\%$ on random matrices,
+test \texttt{test\_quintic\_newton\_schulz\_approximates\_polar}), computed
+in \texttt{bfloat16} in the reference.
+
+\section{DynMuon-Route: per-layer exponent routing}
+\label{sec:routing}
+
+DynMuon-Route assigns each matrix parameter $l$ its own exponent $p_{t,l}$,
+driven by a cheap geometric proxy $x_{t,l}$ of that layer's momentum.
+
+\subsection{Routing proxies}
+
+\begin{description}
+\item[Stable rank.] $\displaystyle
+\srank(M) = \frac{\|M\|_F^2}{\sigma_{\max}(M)^2}
+= \frac{\|M\|_F^2}{\lambda_{\max}(M M^\top)} \in [1, k]$.
+It equals $1$ for a rank-one (maximally anisotropic) momentum and $k$ for an
+isotropic one. With $X_n = M/\|M\|_F$ and $A = X_n X_n^\top$,
+$\srank(M) = 1/\lambda_{\max}(A)$
+(test \texttt{test\_stable\_rank\_identity}), so it is free where the Gram
+eigendecomposition is computed anyway.
+
+\item[Instantaneous SNR proxy.] $\gamma = \|M\|_F / (\|G - M\|_F + \epsilon)$.
+This name requires a caveat that the implementation makes precise: with
+Nesterov momentum \eqref{eq:momentum}, $G - M = -\mu B$ identically, so
+\begin{equation}
+\gamma \;=\; \frac{\|G + \mu B\|_F}{\mu \|B\|_F + \epsilon}.
+\end{equation}
+For stationary gradients ($B \to G/(1-\mu)$) this tends to
+$1/\mu \approx 1.05$; for i.i.d.\ mean-zero gradients it concentrates near
+$\sqrt{1-\mu^2}/\mu \approx 0.33$. The proxy thus measures
+gradient/momentum-buffer agreement on a \emph{compressed} scale rather than a
+true signal-to-noise ratio.
+
+\item[EMA SNR proxy.] A statistically grounded alternative. With decay
+$\rho \in (0,1)$ and bias correction $b_t = 1 - \rho^t$, maintain
+\begin{equation}
+m_t = \rho\, m_{t-1} + (1{-}\rho) G_t, \qquad
+v_t = \rho\, v_{t-1} + (1{-}\rho) \|G_t\|_F^2,
+\end{equation}
+and define $\widehat{m}_t = m_t / b_t$, $\widehat{v}_t = v_t / b_t$,
+\begin{equation}
+\label{eq:snrema}
+\gamma_{\mathrm{ema}} = \frac{\|\widehat m_t\|_F}
+{\sqrt{\max\bigl(\widehat v_t - \|\widehat m_t\|_F^2,\, 0\bigr) + \epsilon}} .
+\end{equation}
+Since $\mathbb{E}\|G\|_F^2 - \|\mathbb{E}G\|_F^2$ is the total gradient
+variance, \eqref{eq:snrema} estimates signal norm over noise standard
+deviation; it separates a repeated gradient from a sign-alternating one by an
+order of magnitude (test
+\texttt{test\_snr\_ema\_proxy\_separates\_clean\_from\_noisy\_gradients}).
+
+\item[Alignment.] $\alpha = |\langle W, M\rangle_F| \,/\,
+(\|W\|_F \|M\|_F + \epsilon) \in [0, 1]$, the absolute cosine between the
+weight and its momentum.
+\end{description}
+
+\subsection{Routing maps}
+
+\paragraph{Pure logistic modes.} The proxy is mapped through
+\begin{equation}
+\label{eq:logistic}
+p(x) \;=\; p_{\min} + \frac{p_{\max}-p_{\min}}
+{1+\exp\!\bigl(-(x-\mu_r)/\omega\bigr)},
+\end{equation}
+with per-layer-type center $\mu_r$ and width $\omega$. The \emph{sign} of
+$\omega$ sets the orientation:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+proxy & $\omega$ & routing logic \\
+\midrule
+stable rank & $>0$ & anisotropic (low $\srank$) $\Rightarrow$ $p \to p_{\min}$;
+isotropic $\Rightarrow$ $p \to p_{\max}$\\
+SNR / EMA-SNR & $<0$ & noisy (low $\gamma$) $\Rightarrow$ $p \to p_{\max}$
+(raw momentum naturally\\
+& & downweights weak directions); stable $\Rightarrow$ negative $p$ allowed\\
+alignment & $>0$ & aligned $\Rightarrow$ $p \to p_{\max}$;
+orthogonal $\Rightarrow$ $p \to p_{\min}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The SNR orientation deserves emphasis since an earlier draft of this document
+stated it backwards: orthogonalization ($p \le 0$) \emph{amplifies} weak
+directions, which is exactly where gradient noise lives
+\cite{spectral2026noise}, so layers flagged as noisy are routed \emph{toward}
+$p_{\max}$, not away from it.
+
+\paragraph{Schedule-modulated mode (the router).} Each layer follows the
+shared clock \eqref{eq:schedule} plus a clipped local lean:
+\begin{equation}
+\label{eq:router}
+p_{t,l} \;=\; \clip\Bigl(p_t + \beta\,\bigl(x_{t,l} - \bar{x}_t\bigr),\;
+p_{\min},\; p_{\max}\Bigr),
+\end{equation}
+where $\bar x_t$ is either a fixed per-layer-type reference or (default,
+\texttt{dynamic\_ref}) an exponential moving average of the cross-layer mean
+proxy, $\bar x_t = (1-\beta_r)\sum_{s<t} \beta_r^{\,t-1-s}\,
+\mathrm{mean}_l\, x_{s,l}$ with decay $\beta_r$. Subtracting $\bar x_t$
+removes the global temporal trend of the proxy (which the clock already
+owns), so the lean carries only the genuinely per-layer signal. At
+$\beta = 0$, \eqref{eq:router} reduces exactly to the reference schedule
+(test \texttt{test\_schedule\_modulated\_reduces\_to\_schedule\_when\_beta\_zero}).
+The per-layer exponent is applied through the same transform as the baseline
+(three-phase in \texttt{reference} mode, exact in \texttt{svd}/\texttt{ns}
+modes), so the router is a strict generalization of DynMuon: it differs from
+the baseline only through the lean.
+
+\begin{remark}[What routing can and cannot claim]
+By Lemma~\ref{lem:norm}, a lean of $\beta\,\Delta x \approx 0.5$ in $p$
+changes the update norm by up to an order of magnitude. Routing experiments
+therefore come in two kinds: with \texttt{magnitude="none"} the router is a
+\emph{joint} geometry-and-step-size controller (faithful to the reference);
+with \texttt{magnitude="polar\_fro"} it is a pure spectrum-shape controller.
+Only the second kind can attribute gains to per-layer geometry.
+\end{remark}
+
+\subsection{Spectrum controls}
+\label{sec:controls}
+
+Following \cite{liu2026notspecial}, two Frobenius-norm-preserving controls
+replace $\Sigma^p$ in the exact SVD path (with $\Sigma$ the raw spectrum and
+$k$ its length):
+\begin{align}
+\text{\texttt{inverted}:}\quad & f(\Sigma) = (\sigma_k, \sigma_{k-1}, \dots,
+\sigma_1) \quad\text{(reversed assignment, same multiset)},\\
+\text{\texttt{random}:}\quad & f(\Sigma) = r \cdot
+\frac{\|\Sigma\|_2}{\|r\|_2}, \qquad r_i \overset{\text{iid}}{\sim}
+\mathcal{U}(0,1) \quad\text{(seeded, reproducible)}.
+\end{align}
+Both satisfy $\|U f(\Sigma) V^\top\|_F = \|M\|_F$. Combined with
+\eqref{eq:polarfro} they test whether \emph{any} property of the routed
+spectrum beyond its magnitude matters: if random spectra match routed
+exponents at equal update norm, the router is a per-layer learning-rate
+controller and should be presented as such.
+
+\section{RelMuon: weight-dependent spectra}
+\label{sec:relmuon}
+
+RelMuon keeps the momentum's singular vectors and replaces the flat Muon
+spectrum with scales derived from the current weight matrix. Let
+$M = U \Sigma V^\top$ (thin SVD of the momentum) and let
+$\sigma^{(W)}_1 \ge \dots \ge \sigma^{(W)}_k \ge 0$ be the singular values of
+$W$. With $\mathrm{rms}(s) = (\frac1k \sum_i s_i^2)^{1/2}$, the scale modes
+are
+\begin{align}
+\text{\texttt{log1p}:}\quad & s_i = \frac{\log(1+\sigma^{(W)}_i) + \epsilon}
+{\mathrm{rms}\bigl(\log(1+\sigma^{(W)})\bigr) + \epsilon},\\
+\text{\texttt{rms}:}\quad & s_i = \frac{\sigma^{(W)}_i + \epsilon}
+{\mathrm{rms}(\sigma^{(W)}) + \epsilon},\\
+\text{\texttt{complete}:}\quad & s_i = \sigma^{(W)}_i
+\quad (\text{all ones if } \mathrm{rms}(\sigma^{(W)}) \le \epsilon),\\
+\text{\texttt{log1p\_aligned}:}\quad & s_i =
+\frac{\log(1+\|W v_i\|_2) + \epsilon}
+{\mathrm{rms}\bigl(\log(1+\|W v_\cdot\|_2)\bigr) + \epsilon},
+\end{align}
+and the update is $D_{\mathrm{RelMuon}} = U \diag(s) V^\top$, optionally with
+a trust cap $s_i \leftarrow \min(s_i, s_{\max})$ that bounds the update's
+spectral norm by $s_{\max}$.
+
+\begin{remark}[Ordinal vs.\ aligned pairing]
+The first three modes pair the $i$-th largest weight singular value with the
+$i$-th strongest \emph{update} direction. The two singular bases are
+unrelated, so this pairing is ordinal (rank-based), not geometric. The
+\texttt{log1p\_aligned} mode removes the arbitrariness: $\|W v_i\|_2$ is the
+actual action of the weight along the $i$-th update direction $v_i$
+(right singular vector of $M$), so each direction is scaled by how strongly
+the weight uses it. All normalized modes degrade to the Muon update
+($s \equiv 1$) on zero weights, which matters because projection layers are
+zero-initialized in our model.
+\end{remark}
+
+\begin{remark}[\texttt{complete} mode is multiplicative]
+With $s_i = \sigma^{(W)}_i$ the update spectrum is proportional to the weight
+spectrum — the spectral analogue of LARS-style relative updates. This is a
+positive feedback loop (larger weights $\Rightarrow$ larger updates) and is
+the mechanism behind the divergences observed in early \texttt{complete}
+runs; it requires the trust cap or a conservative learning rate.
+\end{remark}
+
+\section{Implementation invariants}
+
+For completeness, the facts the test suite pins down:
+\begin{enumerate}
+\item \textbf{Reference parity.} \texttt{compute\_mode="reference"} with
+\texttt{routing\_mode="global\_schedule"} reproduces the released DynMuon
+bitwise over full trajectories spanning all three phases of
+\eqref{eq:threephase}, including \texttt{bfloat16} quantization of the
+transform and of the applied update, the $\epsilon$ conventions
+(optimizer $\epsilon = 10^{-8}$ reaches Newton--Schulz;
+\texttt{fast\_spectral} uses its internal $10^{-7}$), the schedule's
+step-from-one convention, and decoupled weight decay at the base learning
+rate (\texttt{validate\_reference.py}).
+\item \textbf{Continuous-path agreement.} The \texttt{svd} and \texttt{ns}
+paths agree on $D(p)$ to the accuracy of the chosen polar iteration, and both
+shape the raw spectrum per Remark~\ref{rem:backscale}.
+\item \textbf{State persistence.} The schedule step counter, the cross-layer
+proxy EMA, and the spectrum-control RNG are part of
+\texttt{state\_dict()}; resuming from a checkpoint continues the trajectory
+bitwise (\texttt{test\_state\_dict\_resume\_matches\_uninterrupted}). Earlier
+runs that resumed from checkpoints restarted the schedule and are invalid.
+\item \textbf{Proxies are update-independent.} All proxies are computed in
+\texttt{float32} from the momentum/gradient/weight before shaping, so
+routing diagnostics never perturb the update itself.
+\end{enumerate}
+
+\begin{thebibliography}{9}
+
+\bibitem{wu2026dynmuon}
+F.~Wu, R.~Shah, S.~Silwal, Q.~Zhang.
+\emph{DynMuon: A Dynamic Spectral Shaping View of Muon}.
+arXiv:2605.17109, 2026. Reference code: \url{https://github.com/fzwark/DynMuon}.
+
+\bibitem{jordan2024muon}
+K.~Jordan et al.
+\emph{Muon: An optimizer for hidden layers in neural networks}.
+\url{https://kellerjordan.github.io/posts/muon/}, 2024.
+
+\bibitem{jordan2024modded}
+K.~Jordan et al.
+\emph{modded-nanogpt: Speedrunning the NanoGPT baseline}.
+\url{https://github.com/KellerJordan/modded-nanogpt}, 2024.
+
+\bibitem{liu2026notspecial}
+\emph{Muon is Not That Special: Random or Inverted Spectra Work Just as
+Well}. arXiv:2605.11181, 2026.
+
+\bibitem{bernstein2023spectral}
+J.~Bernstein et al.
+\emph{A Spectral Condition for Feature Learning}.
+arXiv:2310.17813, 2023.
+
+\bibitem{liu2025muonscalable}
+J.~Liu et al.
+\emph{Muon is Scalable for LLM Training}.
+arXiv:2502.16982, 2025.
+
+\bibitem{spectral2026noise}
+\emph{The Spectral Dynamics and Noise Geometry of Muon}.
+arXiv:2606.08388, 2026.
+
+\end{thebibliography}
+
+\end{document}

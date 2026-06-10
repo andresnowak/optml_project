@@ -11,8 +11,14 @@ def main() -> None:
     ap.add_argument("--config", required=True)
     ap.add_argument("--seed", type=int)
     ap.add_argument("--routing-mode", dest="routing_mode")
-    ap.add_argument("--compute-mode", dest="compute_mode")
+    ap.add_argument("--compute-mode", dest="compute_mode",
+                    choices=["reference", "svd", "ns"])
     ap.add_argument("--ns-variant", dest="ns_variant", choices=["quintic", "cubic"])
+    ap.add_argument("--magnitude", choices=["none", "polar_fro"])
+    ap.add_argument("--spectrum", choices=["power", "random", "inverted"])
+    ap.add_argument("--track-proxies", dest="track_proxies",
+                    action=argparse.BooleanOptionalAction)
+    ap.add_argument("--snr-ema-decay", dest="snr_ema_decay", type=float)
     ap.add_argument("--train-steps", dest="train_steps", type=int)
     ap.add_argument("--batch-size", dest="batch_size", type=int,
                     help="sequences per optimizer step")
@@ -28,11 +34,12 @@ def main() -> None:
     ap.add_argument("--adam-lr", dest="adam_lr", type=float)
     ap.add_argument("--weight-decay", dest="weight_decay", type=float)
     ap.add_argument("--relmuon-scale-mode", dest="relmuon_scale_mode",
-                    choices=["log1p", "rms", "complete"])
+                    choices=["log1p", "rms", "complete", "log1p_aligned"])
+    ap.add_argument("--relmuon-scale-cap", dest="relmuon_scale_cap", type=float)
     ap.add_argument("--noise-lambda", dest="noise_lambda", type=float)
     ap.add_argument("--beta", type=float)
     ap.add_argument("--modulate-metric", dest="modulate_metric",
-                    choices=["stable_rank", "snr", "alignment"])
+                    choices=["stable_rank", "snr", "snr_ema", "alignment"])
     ap.add_argument("--dynamic-ref", dest="dynamic_ref", action=argparse.BooleanOptionalAction)
     ap.add_argument("--run-name", dest="run_name")
     ap.add_argument("--wandb-group", dest="wandb_group")

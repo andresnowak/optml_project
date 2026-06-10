@@ -71,6 +71,7 @@ def build_optimizers(model: nn.Module, cfg: dict):
             eps=cfg.get("relmuon_eps", 1e-8),
             adjust_lr_fn=cfg.get("adjust_lr_fn", None),
             scale_mode=cfg.get("relmuon_scale_mode", "log1p"),
+            scale_cap=cfg.get("relmuon_scale_cap"),
         )
         aux_groups = _adamw_aux_groups(split, cfg)
         adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None
@@ -102,10 +103,12 @@ def build_optimizers(model: nn.Module, cfg: dict):
         lr=cfg["muon_lr"],
         momentum=cfg.get("momentum", 0.95),
         nesterov=cfg.get("nesterov", True),
+        weight_decay=cfg.get("weight_decay", 0.0),
         routing_mode=routing_mode,
-        compute_mode=cfg["compute_mode"],
+        compute_mode=cfg.get("compute_mode", "reference"),
         ns_variant=cfg.get("ns_variant", "quintic"),
         ns_steps=cfg.get("ns_steps", 5),
+        eps=cfg.get("dynmuon_eps", 1e-8),
         adjust_lr_fn=cfg.get("adjust_lr_fn", "spectral_norm"),
         beta=cfg.get("beta", route_mode.get("beta", 0.1)),
         dynamic_ref=cfg.get("dynamic_ref", route_mode.get("dynamic_ref", False)),
@@ -115,6 +118,11 @@ def build_optimizers(model: nn.Module, cfg: dict):
         tau_ratio=cfg.get("tau_ratio", 0.04),
         width_ratio=cfg.get("width_ratio", 0.04),
         total_steps=cfg["train_steps"] if needs_schedule else None,
+        magnitude=cfg.get("magnitude", "none"),
+        spectrum=cfg.get("spectrum", "power"),
+        spectrum_seed=cfg.get("seed", 0),
+        track_proxies=cfg.get("track_proxies", True),
+        snr_ema_decay=cfg.get("snr_ema_decay", 0.95),
     ) if param_groups else None
     aux_groups = _adamw_aux_groups(split, cfg)
     adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None

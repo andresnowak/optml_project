@@ -15,23 +15,43 @@ n_layer: 12
 n_head: 6
 
 # method
-matrix_optimizer: dynmuon       # dynmuon | muon | adamw
-routing_mode: schedule_modulated  # fixed | global_schedule | schedule_modulated | stable_rank | snr | alignment
+matrix_optimizer: dynmuon       # dynmuon | muon | relmuon | adamw
+routing_mode: schedule_modulated  # fixed | global_schedule | schedule_modulated | stable_rank | snr | snr_ema | alignment
 fixed_p: 0.0               # used when routing_mode=fixed (0.0 = Muon, 1.0 = SGD)
-compute_mode: ns           # ns (fast Newton-Schulz/eigen) | svd (exact)
-ns_variant: quintic        # quintic (reference DynMuon) | cubic (textbook)
-ns_steps: 5                # DynMuon cubic steps; Muon configs override this to 12
-# global_schedule logistic (reference DynMuon get_p): p drops 1 -> -0.25
+# compute_mode:
+#   reference — the released DynMuon transform, bit-matched (3-phase switch:
+#               p>=0.25 raw momentum; 0<=p<0.25 Newton-Schulz polar; p<0
+#               fast_spectral Taylor-2 with the ||M||^p back-scale). Default.
+#   svd       — exact continuous U Σ^p Vᵀ on the raw spectrum (float32).
+#   ns        — continuous U Σ^p Vᵀ via Gram eigendecomposition + NS polar.
+compute_mode: reference
+ns_variant: quintic        # quintic (reference coefficients) | cubic (textbook); ns mode only
+ns_steps: 5                # cubic iteration count; ns mode only
+dynmuon_eps: 1.0e-8        # reference optimizer epsilon (fast_spectral keeps its internal 1e-7)
+# global_schedule logistic (reference DynMuon get_p): p drops 1 -> -0.25;
+# the schedule step starts at 1 on the first optimizer step (reference semantics).
 tau_ratio: 0.04            # schedule center (fraction of total steps)
 width_ratio: 0.04          # schedule width
+
+# magnitude/spectrum ablations (math.tex §6) — defaults are reference-faithful:
+#   magnitude: none      — D(p) is applied as-is; note ||D(p)||_F varies ~sqrt(min(m,n))
+#                          across p, so the p schedule doubles as an implicit LR schedule.
+#   magnitude: polar_fro — rescale every update to ||D||_F = sqrt(min(m,n)) (the exact
+#                          polar factor's norm), so p changes only the spectrum SHAPE.
+#   spectrum: power | random | inverted — Kaon-style controls (random/inverted need
+#                          compute_mode: svd); both preserve the Frobenius norm of Σ.
+magnitude: none
+spectrum: power
+track_proxies: true        # log sr/gamma/alpha each step (costs one eigvalsh in reference mode)
+snr_ema_decay: 0.95        # decay for the snr_ema routing proxy
 
 # optimization
 momentum: 0.95
 nesterov: true
-adjust_lr_fn: spectral_norm   # spectral_norm | none; Muon also supports keller_jordan
+adjust_lr_fn: spectral_norm   # spectral_norm | rms_norm | none; Muon also supports keller_jordan
 muon_lr: 2.0e-2            # max matrix LR
 adam_lr: 6.0e-4           # embeddings / norms / biases
-weight_decay: 0.1
+weight_decay: 0.1         # decoupled; applies to ALL matrix optimizers (incl. dynmuon)
 scalar_weight_decay: 0.0  # embeddings / biases / norm gains
 
 # schedule
@@ -66,7 +86,7 @@ noise_lambda: 0.0
 #   modulate each type around its own baseline. `beta` is the (shared) gain.
 route:
   schedule_modulated:
-    metric: stable_rank        # stable_rank | snr | alignment
+    metric: stable_rank        # stable_rank | snr | snr_ema | alignment
     # The 124M probe showed stable rank is dominated by a global temporal rise
     # (~1 -> ~4), with little attn/mlp gap. dynamic_ref centers the nudge on the
     # running cross-layer mean so the schedule owns that trend and the router only
@@ -85,7 +105,9 @@ route:
     attn:    {mu: 1.80, omega: 0.86}
     mlp:     {mu: 2.08, omega: 0.86}
     default: {mu: 1.95, omega: 0.86}
-  snr:                         # x = gamma; low (noisy) => p >= 0  (omega < 0)
+  snr:                         # x = gamma; low (noisy) => p -> p_max  (omega < 0)
     default: {mu: 1.5, omega: -0.5}
+  snr_ema:                     # x = bias-corrected EMA SNR; same orientation as snr
+    default: {mu: 1.0, omega: -0.5}
   alignment:                   # x = alpha in [0, 1]; high => p -> 1
     default: {mu: 0.3, omega: 0.1}
