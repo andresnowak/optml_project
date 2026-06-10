@@ -139,7 +139,7 @@ class DynMuonRoute(torch.optim.Optimizer):
 
     Per-param-group knobs (``mu``, ``omega``, ``ref``) let Attention, MLP and other
     matrices carry distinct routing; the trainer builds one group per layer type.
-    Biases, norm gains, and embeddings must NOT be passed here — route them through
+    Biases, norn gains, and embeddings must NOT be passed here — route them through
     AdamW.
     """
 
@@ -330,28 +330,27 @@ class DynMuonRoute(torch.optim.Optimizer):
             _, S_w, _ = _svd(W2)
             r = min(S.numel(), S_w.numel())
             S_hat = S_w[:r]
-            S_hat = S_hat / (torch.sqrt(torch.mean(S_hat.square())) + 1e-8)
+            S_hat = S_hat / (torch.sqrt(torch.mean(S_hat.square())) + eps)
+            D = (U[:, :r] * S_hat.to(dtype=U.dtype, device=U.device)) @ Vh[:r, :]
+        elif spectrum_mode == "relmuon_log1p":
+            _, S_w, _ = _svd(W2)
+            r = min(S.numel(), S_w.numel())
+            S_hat = torch.log1p(S_w[:r].clamp(min=0.0))
+            S_hat = (S_hat + eps) / (torch.sqrt(torch.mean(S_hat.square())) + eps)
             D = (U[:, :r] * S_hat.to(dtype=U.dtype, device=U.device)) @ Vh[:r, :]
         elif spectrum_mode == "random_uniform":
             S_hat = torch.rand_like(S)
-            S_hat = S_hat / (torch.sqrt(torch.mean(S_hat.square())) + 1e-8)
+            S_hat = S_hat / (torch.sqrt(torch.mean(S_hat.square())) + eps)
             D = (U * S_hat) @ Vh
         elif spectrum_mode == "inverted":
             S_hat = torch.flip(S, dims=[0])
-            S_hat = S_hat / (torch.sqrt(torch.mean(S_hat.square())) + 1e-8)
+            S_hat = S_hat / (torch.sqrt(torch.mean(S_hat.square())) + eps)
             D = (U * S_hat) @ Vh
         else:
             raise RuntimeError(f"unsupported spectrum_mode: {spectrum_mode}")
 
         if transposed:
             D = D.transpose(0, 1)
-        lr_scale = _shape_lr_scale(fan_out, fan_in, group["adjust_lr_fn"])
-        p.add_(D.reshape(orig_shape), alpha=-group["lr"] * lr_scale)
-
-        state.update(last_p=float(p_exp), last_sr=float(sr),
-                     last_gamma=float(gamma), last_alpha=float(alpha))
-        return x
-          D = D.transpose(0, 1)
         lr_scale = _shape_lr_scale(fan_out, fan_in, group["adjust_lr_fn"])
         p.add_(D.reshape(orig_shape), alpha=-group["lr"] * lr_scale)
 
