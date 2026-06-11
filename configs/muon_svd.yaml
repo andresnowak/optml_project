@@ -1,0 +1,6 @@
+# Exact-polar Muon: SVD orthogonalization sets every live singular value to 1.
+extends: muon.yaml
+orthogonalize: svd
+weight_decay: 0.1
+adjust_lr_fn: spectral_norm
+run_name: muon_svd_polar

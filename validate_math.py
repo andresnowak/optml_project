@@ -29,6 +29,7 @@ from src.optimizers.dynmuon import (
 )
 from src.optimizers.gated_muon import gated_zeropower_via_newtonschulz5
 from src.optimizers.kaon import kaon_chaos_map, kaon_update
+from src.optimizers.muon import muon_update, zeropower_via_svd
 from src.optimizers.relmuon import (
     relmuon_aligned_scales,
     relmuon_update,
@@ -157,6 +158,26 @@ def test_gated_muon_suppresses_tiny_singular_direction():
 
     assert s[0] > 0.5
     assert s[1] < 1e-5
+
+
+def test_muon_svd_sets_live_singular_values_to_one():
+    """The exact SVD polar path is the literal all-live-singular-values-to-one ablation."""
+    G = torch.randn(6, 10)
+
+    update = zeropower_via_svd(G)
+    s = torch.linalg.svdvals(update.float())
+
+    assert torch.allclose(s, torch.ones_like(s), atol=1e-6, rtol=1e-6)
+
+
+def test_muon_update_svd_matches_exact_polar():
+    G = torch.randn(6, 10)
+    momentum = torch.zeros_like(G)
+
+    got = muon_update(G, momentum, mu=0.0, nesterov=False, orthogonalize="svd")
+    ref = zeropower_via_svd(G)
+
+    assert torch.allclose(got.float(), ref.float(), atol=1e-6, rtol=1e-6)
 
 
 def test_stable_rank_identity():

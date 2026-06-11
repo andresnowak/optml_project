@@ -1,6 +1,7 @@
 # Baseline: standard Muon (fixed spectral exponent p = 0, the polar factor).
 extends: gpt124m.yaml
 matrix_optimizer: muon
+orthogonalize: ns
 ns_steps: 12
 # Alternative equivalent baseline through DynMuonRoute:
 # matrix_optimizer: dynmuon

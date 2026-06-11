@@ -66,6 +66,7 @@ def build_optimizers(model: nn.Module, cfg: dict):
             mu=cfg.get("momentum", 0.95),
             nesterov=cfg.get("nesterov", True),
             ns_steps=cfg.get("ns_steps", 12),
+            orthogonalize=cfg.get("orthogonalize", "ns"),
             adjust_lr_fn=cfg.get("adjust_lr_fn", "spectral_norm"),
         )
         aux_groups = _adamw_aux_groups(split, cfg)

@@ -82,6 +82,21 @@ def gated(y: np.ndarray, sigma: np.ndarray, tau: float) -> np.ndarray:
     return gate * y
 
 
+def interp_gate(sigma: np.ndarray, tau: float, mult: float, power: float) -> np.ndarray:
+    alpha = mult * tau
+    return sigma**power / (sigma**power + alpha**power)
+
+
+def interp_gated_target(
+    sigma: np.ndarray,
+    tau: float,
+    mult: float,
+    power: float,
+) -> np.ndarray:
+    h = interp_gate(sigma, tau, mult, power)
+    return sigma + h * (1.0 - sigma)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=5)
@@ -91,6 +106,14 @@ def main() -> None:
                     help="ridge scale for damped polar")
     ap.add_argument("--tau", type=float, default=1e-3,
                     help="gate scale applied to NS outputs")
+    ap.add_argument("--gate-mult", type=float, default=10.0,
+                    help="new interpolation gate midpoint is gate_mult * tau")
+    ap.add_argument("--gate-power", type=float, default=6.0,
+                    help="sharpness exponent for the new interpolation gate")
+    ap.add_argument("--sigma-min", type=float, default=1e-12,
+                    help="smallest input singular value shown on the x-axis")
+    ap.add_argument("--sigma-max", type=float, default=1.0,
+                    help="largest input singular value shown on the x-axis")
     ap.add_argument("--out", type=Path, default=Path("results/ns_singular_map.png"))
     args = ap.parse_args()
 
@@ -100,11 +123,12 @@ def main() -> None:
             f"--steps must be in [1, {len(coeffs)}] for --coeff-set={args.coeff_set}"
         )
 
-    sigma = np.logspace(-7, 0, 2000)
+    sigma = np.logspace(np.log10(args.sigma_min), np.log10(args.sigma_max), 2400)
     cubic = cubic_response(sigma, args.steps)
     ns = ns_response(sigma, coeffs, args.steps)
     soft = damped_polar(sigma, args.lam)
     gated_ns = gated(ns, sigma, args.tau)
+    interp_target = interp_gated_target(sigma, args.tau, args.gate_mult, args.gate_power)
     ns_steps = ns_responses_by_step(sigma, coeffs, args.steps)
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.8), constrained_layout=True)
@@ -115,8 +139,14 @@ def main() -> None:
     ax.loglog(sigma, ns, label=f"{args.coeff_set}, {args.steps} steps")
     ax.loglog(sigma, soft, label=rf"damped polar, $\lambda={args.lam:g}$")
     ax.loglog(sigma, gated_ns, label=rf"gated {args.coeff_set}, $\tau={args.tau:g}$")
+    ax.loglog(
+        sigma,
+        interp_target,
+        label=rf"interp-gated {args.coeff_set}, $\alpha={args.gate_mult * args.tau:g}$, $r={args.gate_power:g}$",
+    )
     ax.axvline(args.lam, color="tab:green", lw=1, alpha=0.35)
     ax.axvline(args.tau, color="tab:red", lw=1, alpha=0.35)
+    ax.axvline(args.gate_mult * args.tau, color="tab:purple", lw=1, alpha=0.35)
     ax.set_xlabel(r"input singular value $\sigma$")
     ax.set_ylabel(r"output scale $f(\sigma)$")
     ax.set_title("Singular-value map")
@@ -124,15 +154,17 @@ def main() -> None:
     ax.legend(fontsize=8)
 
     ax = axes[1]
-    colors = plt.cm.viridis(np.linspace(0.15, 0.9, len(ns_steps)))
-    for i, (y, color) in enumerate(zip(ns_steps, colors), start=1):
-        ax.loglog(sigma, gated(y, sigma, args.tau), color=color,
-                  label=f"{i} step{'s' if i > 1 else ''}")
+    powers = [2, 4, 6, 12]
+    colors = plt.cm.viridis(np.linspace(0.15, 0.9, len(powers)))
+    for power, color in zip(powers, colors):
+        target_i = interp_gated_target(sigma, args.tau, args.gate_mult, power)
+        ax.loglog(sigma, target_i, color=color, label=rf"$r={power}$")
     ax.loglog(sigma, sigma, "k--", lw=1, label="identity")
     ax.axvline(args.tau, color="tab:red", lw=1, alpha=0.35)
+    ax.axvline(args.gate_mult * args.tau, color="tab:purple", lw=1, alpha=0.35)
     ax.set_xlabel(r"input singular value $\sigma$")
-    ax.set_ylabel(r"gated output scale")
-    ax.set_title(rf"Gated {args.coeff_set} by step, $\tau={args.tau:g}$")
+    ax.set_ylabel(r"target output scale")
+    ax.set_title(rf"Target-to-one gates, $\alpha={args.gate_mult * args.tau:g}$")
     ax.grid(True, which="both", alpha=0.25)
     ax.legend(fontsize=8)
 
@@ -142,6 +174,7 @@ def main() -> None:
         (f"{args.coeff_set} {args.steps}", ns),
         ("damped polar", soft),
         (f"gated {args.coeff_set}", gated_ns),
+        ("interp-gated NS", interp_target),
     ):
         ax.semilogx(sigma, y / sigma, label=name)
     ax.axhline(1.0, color="k", lw=1, alpha=0.4)
@@ -154,10 +187,12 @@ def main() -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=180)
 
-    probes = np.array([1e-5, 3e-5, 1e-4, 2e-4, 1e-3])
+    probes = np.array([1e-8, 1e-7, 3e-7, 1e-6, 3e-6, 1e-5])
     print(f"wrote {args.out}")
     print(f"coefficient set: {args.coeff_set}")
-    print("sigma      cubic       ns-map      damped      gated-ns")
+    print(
+        "sigma      cubic       ns-map      damped      old-gated   interp-target"
+    )
     for s, c, q, d, g in zip(
         probes,
         cubic_response(probes, args.steps),
@@ -165,7 +200,10 @@ def main() -> None:
         damped_polar(probes, args.lam),
         gated(ns_response(probes, coeffs, args.steps), probes, args.tau),
     ):
-        print(f"{s:8.1e}  {c:10.3e}  {q:10.3e}  {d:10.3e}  {g:14.3e}")
+        target = interp_gated_target(np.array([s]), args.tau, args.gate_mult, args.gate_power)[0]
+        print(
+            f"{s:8.1e}  {c:10.3e}  {q:10.3e}  {d:10.3e}  {g:10.3e}  {target:13.3e}"
+        )
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ from typing import Any
 import torch
 from torch import Tensor
 
+MUON_ORTHOGONALIZE_MODES = ("ns", "svd")
+
 
 def zeropower_via_newtonschulz5(G: Tensor, ns_steps: int = 12) -> Tensor:
     """Approximate the zeroth power / polar factor with Newton-Schulz steps."""
@@ -34,18 +36,42 @@ def zeropower_via_newtonschulz5(G: Tensor, ns_steps: int = 12) -> Tensor:
     return X
 
 
-@torch.compile
-def muon_update(grad: Tensor, momentum: Tensor, mu: float = 0.95, nesterov: bool = True, ns_steps: int = 12) -> Tensor:
-    """Compiled Muon matrix update.
+def zeropower_via_svd(G: Tensor) -> Tensor:
+    """Exact polar factor ``U Vᵀ`` from an SVD.
+
+    This sets every numerically live singular value to one. Rank-deficient
+    directions remain absent because ``full_matrices=False`` returns only the
+    compact singular-vector factors.
+    """
+    if G.ndim < 2:
+        raise ValueError(f"Muon expects matrix-like gradients, got shape {tuple(G.shape)}")
+    U, _, Vh = torch.linalg.svd(G.float(), full_matrices=False)
+    return (U @ Vh).to(dtype=G.dtype)
+
+
+def muon_update(
+    grad: Tensor,
+    momentum: Tensor,
+    mu: float = 0.95,
+    nesterov: bool = True,
+    ns_steps: int = 12,
+    orthogonalize: str = "ns",
+) -> Tensor:
+    """Build a Muon matrix update.
 
     The buffer is stored in EMA-scaled form. With ``nesterov=True`` the
-    pre-polar matrix is ``(1-mu)`` times the usual sum-form Nesterov direction
-    ``g + mu * (mu * B + g)``. Muon's polar step is scale-invariant, so this
-    matches the reference direction.
+    pre-orthogonalization matrix is ``(1-mu)`` times the usual sum-form
+    Nesterov direction ``g + mu * (mu * B + g)``. The polar step is
+    scale-invariant, so this matches the reference direction for
+    ``orthogonalize="ns"`` and the exact SVD-polar ablation.
     """
     momentum.lerp_(grad, 1.0 - mu)
     update = grad.lerp(momentum, mu) if nesterov else momentum
-    return zeropower_via_newtonschulz5(update, ns_steps)
+    if orthogonalize == "ns":
+        return zeropower_via_newtonschulz5(update, ns_steps)
+    if orthogonalize == "svd":
+        return zeropower_via_svd(update)
+    raise ValueError(f"orthogonalize must be one of {MUON_ORTHOGONALIZE_MODES}, got {orthogonalize!r}")
 
 
 def _shape_lr_scale(fan_out: int, fan_in: int, adjust_lr_fn: str | None) -> float:
@@ -69,8 +95,13 @@ class Muon(torch.optim.Optimizer):
         mu: float = 0.95,
         nesterov: bool = True,
         ns_steps: int = 12,
+        orthogonalize: str = "ns",
         adjust_lr_fn: str | None = "spectral_norm",
     ):
+        if orthogonalize not in MUON_ORTHOGONALIZE_MODES:
+            raise ValueError(
+                f"orthogonalize must be one of {MUON_ORTHOGONALIZE_MODES}, got {orthogonalize!r}"
+            )
         if adjust_lr_fn not in (None, "none", "spectral_norm", "keller_jordan"):
             raise ValueError(
                 "adjust_lr_fn must be one of None, 'none', 'spectral_norm', "
@@ -78,7 +109,7 @@ class Muon(torch.optim.Optimizer):
             )
         defaults = dict(
             lr=lr, weight_decay=weight_decay, mu=mu, nesterov=nesterov,
-            ns_steps=ns_steps, adjust_lr_fn=adjust_lr_fn,
+            ns_steps=ns_steps, orthogonalize=orthogonalize, adjust_lr_fn=adjust_lr_fn,
         )
         super().__init__(params, defaults)
 
@@ -108,6 +139,7 @@ class Muon(torch.optim.Optimizer):
                     mu=group["mu"],
                     nesterov=group["nesterov"],
                     ns_steps=group["ns_steps"],
+                    orthogonalize=group["orthogonalize"],
                 )
                 if group["weight_decay"]:
                     p.mul_(1.0 - group["lr"] * group["weight_decay"])

@@ -15,6 +15,7 @@ def main() -> None:
     ap.add_argument("--compute-mode", dest="compute_mode",
                     choices=["reference", "svd", "ns"])
     ap.add_argument("--ns-variant", dest="ns_variant", choices=["quintic", "cubic"])
+    ap.add_argument("--orthogonalize", choices=["ns", "svd"])
     ap.add_argument("--magnitude", choices=["none", "polar_fro"])
     ap.add_argument("--spectrum", choices=["power", "random", "inverted"])
     ap.add_argument("--track-proxies", dest="track_proxies",

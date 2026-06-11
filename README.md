@@ -121,6 +121,7 @@ data/
 |--------|--------|-----|
 | `configs/adamw.yaml` | AdamW | `matrix_optimizer: adamw` (matrix params use `weight_decay`; aux params use `scalar_weight_decay`) |
 | `configs/muon.yaml` | Muon | `matrix_optimizer: muon` (Track-3-style Muon) |
+| `configs/muon_svd.yaml` | exact-polar Muon | `orthogonalize: svd`, sets every live singular value to 1 |
 | `configs/gated_muon.yaml` | GatedMuon | `matrix_optimizer: gated_muon`, Muon with a small-singular-value gate (`gate_tau`) |
 | `configs/dynmuon.yaml` | DynMuon | `routing_mode: global_schedule` (reference-exact) |
 | `configs/route.yaml` | **DynMuon-Route** | `routing_mode: schedule_modulated` (z-scored per-layer router) |
