@@ -7,8 +7,12 @@
 # the router a pure spectrum-shape controller. Compare against route.yaml to
 # attribute routed gains to geometry vs implicit step size.
 extends: route.yaml
-compute_mode: ns           # continuous D(p) via Gram eigh + NS polar; the 3-phase
-                           # reference transform would make p>=0.25 nudges no-ops,
-                           # and full SVD (compute_mode: svd) is ~10x more expensive
+# reference transform + polar_fro: the magnitude normalization applies to any
+# compute path, and the sweep showed the ns path costs ~21% more wall-clock
+# (fp32 eigh + fp32 NS vs the reference's bf16 NS + Taylor) for a semantic
+# difference confined to the ~4% of steps where the clock traverses p in
+# [0, 0.5]. With lean_max=0.25 and the clock at p_min for ~90% of training,
+# routed exponents stay in the fast_spectral branch almost throughout.
+compute_mode: reference
 magnitude: polar_fro
 run_name: dynmuon_route_decoupled

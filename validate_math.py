@@ -20,7 +20,8 @@ import copy
 import pytest
 import torch
 
-from src import DynMuonRoute, Kaon, logistic_route, newton_schulz
+from src import DynMuonRoute, Kaon, build_optimizers, logistic_route, newton_schulz
+from src.models import GPT, GPTConfig
 from src.optimizers.dynmuon import (
     logistic_schedule_p,
     quintic_newton_schulz,
@@ -422,6 +423,36 @@ def test_zscore_lean_is_bounded_and_reduces_to_schedule():
         assert abs(pa - pt) <= 0.2 + 1e-9
         assert abs(pb - pt) <= 0.2 + 1e-9
     assert any(pb > pa for (pa, pb) in routed[1:]), "isotropic layer should lean higher"
+
+
+def test_beta_zero_uses_global_schedule_grouping():
+    """The beta=0 sweep arm is a DynMuon control, so build it with the same
+    single matrix group as global_schedule. Nonzero beta keeps routed groups."""
+    model = GPT(GPTConfig(sequence_length=8, vocab_size=32, n_layer=1, n_head=2, n_embd=8))
+    cfg = {
+        "matrix_optimizer": "dynmuon",
+        "routing_mode": "schedule_modulated",
+        "muon_lr": 0.02,
+        "adam_lr": 6e-4,
+        "embed_lr": 6e-3,
+        "weight_decay": 0.1,
+        "train_steps": 8,
+        "route": {
+            "schedule_modulated": {
+                "metric": "stable_rank",
+                "beta": 0.15,
+                "dynamic_ref": True,
+                "lean_norm": "zscore",
+                "lean_max": 0.25,
+                "default": {"ref": 1.95},
+            },
+        },
+    }
+    dynmuon, _ = build_optimizers(model, {**cfg, "beta": 0.0})
+    assert [g["name"] for g in dynmuon.param_groups] == ["matrix"]
+
+    dynmuon, _ = build_optimizers(model, cfg)
+    assert [g["name"] for g in dynmuon.param_groups] == ["attn", "mlp"]
 
 
 def test_zero_first_step_gradient_does_not_poison_proxy_ema():

@@ -65,7 +65,6 @@ prep)
 
 bowls)
     # Phase 1 — LR bowls (one epoch max; see DATA BUDGET above).
-    # dynmuon: previous sweep's best was at the 0.2 edge -> extend to 0.4/0.8.
     for lr in 0.02 0.05 0.1 0.2 0.4 0.8; do
         submit bowl_dynmuon "bowl_dynmuon_mlr$(lr_tag ${lr})" configs/dynmuon.yaml \
             --muon-lr "${lr}"
@@ -78,6 +77,20 @@ bowls)
     for lr in 0.0003 0.0006 0.0012 0.0024; do
         submit bowl_adamw "bowl_adamw_alr$(lr_tag ${lr})" configs/adamw.yaml \
             --adam-lr "${lr}"
+    done
+    ;;
+
+bowls-left)
+    # Phase 1b — close the bowls on the LEFT. The 2026-06-11 sweep (fixed
+    # init/embed LR) bottoms out at the 0.02 edge for both muon (3.6465) and
+    # dynmuon (3.6502); the old upward trend was an artifact of the broken
+    # embedding setup. Submits only the missing points (run names must not
+    # collide with finished checkpoints).
+    for lr in 0.005 0.01; do
+        submit bowl_dynmuon "bowl_dynmuon_mlr$(lr_tag ${lr})" configs/dynmuon.yaml \
+            --muon-lr "${lr}"
+        submit bowl_muon "bowl_muon_mlr$(lr_tag ${lr})" configs/muon.yaml \
+            --muon-lr "${lr}"
     done
     ;;
 
