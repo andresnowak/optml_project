@@ -156,8 +156,25 @@ kaon)
     submit spectrum_controls "ctrl_kaon_${t}" configs/kaon.yaml --muon-lr "${best}"
     ;;
 
+proxies)
+    # Ablation over "unbalancedness" proxies at fixed beta magnitude and LR.
+    # stable_rank and alignment arms are covered by the route_fill /
+    # route_alignment groups (same beta/LR); this adds the SNR proxies.
+    # Orientation: the framework routes noisy (low gamma) -> raw momentum,
+    # i.e. p decreases with gamma, hence beta = -0.15 is the principled sign;
+    # the +0.15 arm is the orientation sanity check.
+    best="${1:?usage: $0 proxies <muon_lr>}"
+    t="$(lr_tag "${best}")"
+    submit route_proxies "proxy_snr_negbeta_${t}" configs/route.yaml \
+        --muon-lr "${best}" --modulate-metric snr --beta -0.15
+    submit route_proxies "proxy_snr_posbeta_${t}" configs/route.yaml \
+        --muon-lr "${best}" --modulate-metric snr --beta 0.15
+    submit route_proxies "proxy_snr_ema_negbeta_${t}" configs/route.yaml \
+        --muon-lr "${best}" --modulate-metric snr_ema --beta -0.15
+    ;;
+
 final)
-    # Everything still needed for the report, in one shot (~21 jobs).
+    # Everything still needed for the report, in one shot (~24 jobs).
     # Usage: scripts/sweeps.sh final 0.02
     best="${1:?usage: $0 final <best_muon_lr>}"
     "$0" bowls-left
@@ -165,6 +182,7 @@ final)
     "$0" controls "${best}"
     "$0" kaon "${best}"
     "$0" relmuon-bowls
+    "$0" proxies "${best}"
     ;;
 
 *)

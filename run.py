@@ -34,7 +34,7 @@ PY = sys.executable
 REPORT_GROUPS = (
     "bowl_dynmuon", "bowl_muon", "bowl_adamw", "bowl_relmuon",
     "route_arms", "route_lrfix*", "route_lrgrid*", "route_fill*",
-    "route_alignment*", "spectrum_controls", "seed_replicates",
+    "route_alignment*", "route_proxies", "spectrum_controls", "seed_replicates",
 )
 # Loss-curve panel: best-LR baselines vs the routed variants.
 CURVE_RUNS = ("bowl_muon_mlr0p02,bowl_dynmuon_mlr0p02,"
