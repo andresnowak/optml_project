@@ -231,8 +231,11 @@ def log_routing(model: GPT, dynmuon: DynMuonRoute | None, step: int, logger) -> 
             if not st or "last_p" not in st:
                 continue
             n = name_of.get(id(p), "?")
-            payload[f"route/group/{group_name}/p/{n}"] = st["last_p"]
-            payload[f"route/p/{n}"] = st["last_p"]
+            # NaN means "undefined this step" (zero-momentum layers have no
+            # exponent and no proxies); skip rather than log gaps as NaN.
+            if not math.isnan(st["last_p"]):
+                payload[f"route/group/{group_name}/p/{n}"] = st["last_p"]
+                payload[f"route/p/{n}"] = st["last_p"]
             for key, label in (("last_sr", "sr"), ("last_gamma", "gamma"),
                                ("last_gamma_ema", "gamma_ema"), ("last_alpha", "alpha")):
                 value = st.get(key, float("nan"))

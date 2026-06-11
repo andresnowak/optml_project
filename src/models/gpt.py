@@ -141,7 +141,12 @@ class GPT(nn.Module):
                 if "proj" in name and not name.startswith("embed"):
                     p.data.zero_()
                 elif name.startswith("embed"):
-                    p.data.normal_()
+                    # The head is tied to the embedding and fed RMS-normalized
+                    # activations, so logits scale with the embedding row
+                    # norms: std 1/sqrt(d) gives unit rows and an initial loss
+                    # of ~ln(vocab) ~= 10.8 (std 1 gave ~760 and wasted the
+                    # first ~1k steps crushing the logit scale).
+                    p.data.normal_(std=self.config.n_embd ** -0.5)
                 else:
                     p.data.normal_(std=math.sqrt(0.33 / p.size(-1)))
             elif name.endswith("bias"):
