@@ -31,7 +31,7 @@ def main() -> None:
     ap.add_argument("--train-steps", dest="train_steps", type=int)
     ap.add_argument("--noise-lambda", dest="noise_lambda", type=float)
     ap.add_argument("--modulate-metric", dest="modulate_metric",
-                    choices=["stable_rank", "snr", "alignment"])
+                    choices=["stable_rank", "snr", "snr_ema", "alignment"])
     ap.add_argument("--beta", type=float)
     ap.add_argument("--wandb", action="store_true")
     ap.add_argument("--wandb-group", dest="wandb_group", default="exp2_noise")

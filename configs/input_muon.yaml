@@ -1,0 +1,13 @@
+# InputMuon without matrix weight decay.
+extends: gpt124m.yaml
+matrix_optimizer: input_muon
+compile: false
+ns_steps: 12
+weight_decay: 0.0
+input_muon_rank: 64
+input_muon_update_every: 1
+input_muon_basis_max_tokens: 4096
+input_muon_center: false
+run_name: input_muon_no_wd
+
+adjust_lr_fn: none

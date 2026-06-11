@@ -1,0 +1,9 @@
+# RelMuon-complete: Muon singular directions with raw weight singular values.
+# The update spectrum is proportional to the weight spectrum (multiplicative
+# dynamics, see the math.tex RelMuon remark): without a trust cap this collapses
+# to a frozen fixed point (observed: runs stuck at unigram-level val loss ~7.2).
+# The cap bounds the update's spectral norm.
+extends: relmuon_log1p.yaml
+run_name: relmuon_complete
+relmuon_scale_mode: complete
+relmuon_scale_cap: 2.0

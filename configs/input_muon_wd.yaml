@@ -1,0 +1,5 @@
+# InputMuon with matrix weight decay, matching the gpt124m default decay level.
+extends: input_muon.yaml
+weight_decay: 0.1
+input_muon_center: false
+run_name: input_muon_wd

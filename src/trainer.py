@@ -13,8 +13,11 @@ import torch
 from .config import pick_device
 from .data import get_token_batch, iter_microbatches, load_bin, validation_offsets
 from .models import GPT, GPTConfig
+from .models.gpt import Linear
 from .optimizers import build_optimizers
 from .optimizers.dynmuon import DynMuonRoute, _svd
+from .optimizers.input_muon import InputMuon, input_basis_from_activations
+from .optimizers.relmuon import RELMUON_WEIGHT_ONLY_MODES, relmuon_weight_scales
 
 
 _TERMINATE_REQUESTED = False
@@ -33,6 +36,7 @@ class WandbLogger:
     def __init__(self, cfg: dict) -> None:
         import wandb
         self._wandb = wandb
+        settings = wandb.Settings(init_timeout=cfg.get("wandb_init_timeout", 180))
         self._run = wandb.init(
             project=cfg.get("wandb_project", "dynmuon-route"),
             entity=cfg.get("wandb_entity"),
@@ -42,6 +46,7 @@ class WandbLogger:
             resume="allow" if cfg.get("wandb_run_id") else None,
             config=cfg,
             reinit=True,
+            settings=settings,
         )
 
     def log(self, payload: dict, step: int) -> None:
@@ -62,6 +67,94 @@ class TeeLogger:
     def log(self, payload: dict, step: int) -> None:
         for logger in self.loggers:
             logger.log(payload, step=step)
+
+    def finish(self) -> None:
+        for logger in self.loggers:
+            finish = getattr(logger, "finish", None)
+            if finish is not None:
+                finish()
+
+
+class InputMuonBasisCollector:
+    """Collect linear-layer inputs and register active-subspace bases."""
+
+    def __init__(self, model: GPT, optimizer: InputMuon, cfg: dict):
+        self.optimizer = optimizer
+        self.rank = int(cfg.get("input_muon_rank", 64))
+        self.update_every = int(cfg.get("input_muon_update_every", 1))
+        self.basis_max_tokens = int(cfg.get("input_muon_basis_max_tokens", 4096))
+        self.center = bool(cfg.get("input_muon_center", False))
+        if self.rank <= 0:
+            raise ValueError(f"input_muon_rank must be positive, got {self.rank}")
+        if self.update_every <= 0:
+            raise ValueError(f"input_muon_update_every must be positive, got {self.update_every}")
+        if self.basis_max_tokens <= 0:
+            raise ValueError(
+                "input_muon_basis_max_tokens must be positive, "
+                f"got {self.basis_max_tokens}"
+            )
+
+        opt_params = {id(p) for group in optimizer.param_groups for p in group["params"]}
+        self._params: dict[Linear, torch.nn.Parameter] = {}
+        self._buffers: dict[torch.nn.Parameter, list[torch.Tensor]] = {}
+        self._counts: dict[torch.nn.Parameter, int] = {}
+        self._handles = []
+        self.enabled = False
+
+        for _, module in model.named_modules():
+            if isinstance(module, Linear) and id(module.weight) in opt_params:
+                self._params[module] = module.weight
+                self._handles.append(module.register_forward_pre_hook(self._hook))
+
+    def close(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+
+    def begin_step(self, step: int) -> None:
+        self.enabled = step % self.update_every == 0
+        self._buffers.clear()
+        self._counts.clear()
+
+    @torch.no_grad()
+    def _hook(self, module: Linear, inputs) -> None:
+        if not self.enabled or not module.training:
+            return
+        if not inputs:
+            return
+        param = self._params.get(module)
+        if param is None:
+            return
+        remaining = self.basis_max_tokens - self._counts.get(param, 0)
+        if remaining <= 0:
+            return
+
+        x = inputs[0].detach()
+        if x.ndim < 2:
+            return
+        rows = x.reshape(-1, x.size(-1))
+        take = min(remaining, rows.size(0))
+        if take < rows.size(0):
+            idx = torch.linspace(0, rows.size(0) - 1, steps=take, device=rows.device).long()
+            rows = rows.index_select(0, idx)
+        self._buffers.setdefault(param, []).append(rows.contiguous())
+        self._counts[param] = self._counts.get(param, 0) + take
+
+    @torch.no_grad()
+    def end_step(self) -> None:
+        if not self.enabled:
+            return
+        for param, chunks in self._buffers.items():
+            if not chunks:
+                continue
+            X = torch.cat(chunks, dim=0)
+            Q = input_basis_from_activations(X, self.rank, center=self.center)
+            if Q.numel() > 0:
+                self.optimizer.set_input_basis(param, Q)
+                self.optimizer.state[param]["last_basis_rank"] = Q.size(1)
+        self.enabled = False
+        self._buffers.clear()
+        self._counts.clear()
 
 
 def build_arm_logger(cfg: dict, use_wandb: bool, run_name: str, group: str):
@@ -132,12 +225,13 @@ def _checkpoint_path(cfg: dict) -> str:
 
 
 def _load_checkpoint(path: str, device: torch.device) -> dict | None:
+    del device
     if not os.path.exists(path):
         return None
     try:
-        return torch.load(path, map_location=device, weights_only=False)
+        return torch.load(path, map_location="cpu", weights_only=False)
     except TypeError:
-        return torch.load(path, map_location=device)
+        return torch.load(path, map_location="cpu")
 
 
 def _save_checkpoint(
@@ -171,9 +265,10 @@ def _save_checkpoint(
 
 def _restore_rng_state(ckpt: dict) -> None:
     if ckpt.get("torch_rng_state") is not None:
-        torch.set_rng_state(ckpt["torch_rng_state"].cpu())
+        torch.set_rng_state(ckpt["torch_rng_state"].detach().cpu().to(torch.uint8))
     if ckpt.get("cuda_rng_state_all") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all([s.cpu() for s in ckpt["cuda_rng_state_all"]])
+        cuda_states = [state.detach().cpu().to(torch.uint8) for state in ckpt["cuda_rng_state_all"]]
+        torch.cuda.set_rng_state_all(cuda_states)
 
 
 def _wandb_run_id(logger) -> str | None:
@@ -187,6 +282,14 @@ def _wandb_run_id(logger) -> str | None:
         if run_id is not None:
             return run_id
     return None
+
+
+def _finish_logger(logger) -> None:
+    if logger is None:
+        return
+    finish = getattr(logger, "finish", None)
+    if finish is not None:
+        finish()
 
 
 def _install_signal_handlers() -> None:
@@ -219,12 +322,52 @@ def log_routing(model: GPT, dynmuon: DynMuonRoute | None, step: int, logger) -> 
             if not st or "last_p" not in st:
                 continue
             n = name_of.get(id(p), "?")
-            payload[f"route/group/{group_name}/p/{n}"] = st["last_p"]
-            payload[f"route/p/{n}"] = st["last_p"]
-            payload[f"route/sr/{n}"] = st["last_sr"]
-            payload[f"route/gamma/{n}"] = st["last_gamma"]
-            payload[f"route/alpha/{n}"] = st["last_alpha"]
+            # NaN means "undefined this step" (zero-momentum layers have no
+            # exponent and no proxies); skip rather than log gaps as NaN.
+            if not math.isnan(st["last_p"]):
+                payload[f"route/group/{group_name}/p/{n}"] = st["last_p"]
+                payload[f"route/p/{n}"] = st["last_p"]
+            for key, label in (("last_sr", "sr"), ("last_gamma", "gamma"),
+                               ("last_gamma_ema", "gamma_ema"), ("last_alpha", "alpha")):
+                value = st.get(key, float("nan"))
+                if not math.isnan(value):
+                    payload[f"route/{label}/{n}"] = value
     logger.log(payload, step=step)
+
+
+def log_input_muon(model: GPT, optimizer: InputMuon | None, step: int, logger) -> None:
+    """Log InputMuon basis and projection diagnostics."""
+    if logger is None or not isinstance(optimizer, InputMuon):
+        return
+    by_type: dict[str, dict[str, list[float]]] = {}
+    for name, p in model.named_parameters():
+        layer_type = _matrix_layer_type(name)
+        if layer_type is None:
+            continue
+        st = optimizer.state.get(p)
+        if not st:
+            continue
+        bucket = by_type.setdefault(layer_type, {
+            "basis_rank": [],
+            "projected_grad_fraction": [],
+        })
+        if "last_basis_rank" in st:
+            bucket["basis_rank"].append(float(st["last_basis_rank"]))
+        if "last_projected_grad_fraction" in st:
+            bucket["projected_grad_fraction"].append(float(st["last_projected_grad_fraction"]))
+
+    payload = {}
+    all_values: dict[str, list[float]] = {}
+    for layer_type, stats in by_type.items():
+        for key, values in stats.items():
+            if not values:
+                continue
+            payload[f"input_muon/{layer_type}/{key}/mean"] = float(sum(values) / len(values))
+            all_values.setdefault(key, []).extend(values)
+    for key, values in all_values.items():
+        payload[f"input_muon/all/{key}/mean"] = float(sum(values) / len(values))
+    if payload:
+        logger.log(payload, step=step)
 
 
 def _matrix_layer_type(name: str) -> str | None:
@@ -242,6 +385,68 @@ def _matrix_layer_type(name: str) -> str | None:
     return None
 
 
+def _matrix_param_snapshots(model: GPT) -> dict[str, torch.Tensor]:
+    """Clone matrix weights whose updates we want to diagnose."""
+    snapshots = {}
+    for name, p in model.named_parameters():
+        if p.ndim == 2 and _matrix_layer_type(name) is not None:
+            snapshots[name] = p.detach().float().clone()
+    return snapshots
+
+
+@torch.no_grad()
+def log_matrix_update_ratios(
+    model: GPT,
+    before: dict[str, torch.Tensor],
+    step: int,
+    logger,
+    *,
+    eps: float = 1e-12,
+) -> None:
+    """Log relative matrix update sizes grouped by layer type."""
+    if logger is None or not before:
+        return
+    by_type: dict[str, dict[str, list[float]]] = {}
+    for name, p in model.named_parameters():
+        old = before.get(name)
+        layer_type = _matrix_layer_type(name)
+        if old is None or layer_type is None:
+            continue
+        new = p.detach().float()
+        old = old.to(device=new.device)
+        delta = new - old
+        weight_fro = torch.linalg.norm(old).item()
+        update_fro = torch.linalg.norm(delta).item()
+        weight_op = torch.linalg.svdvals(old).amax().item()
+        update_op = torch.linalg.svdvals(delta).amax().item()
+        bucket = by_type.setdefault(layer_type, {
+            "fro_ratio": [],
+            "op_ratio": [],
+            "update_fro": [],
+            "weight_fro": [],
+            "update_op": [],
+            "weight_op": [],
+        })
+        bucket["fro_ratio"].append(update_fro / (weight_fro + eps))
+        bucket["op_ratio"].append(update_op / (weight_op + eps))
+        bucket["update_fro"].append(update_fro)
+        bucket["weight_fro"].append(weight_fro)
+        bucket["update_op"].append(update_op)
+        bucket["weight_op"].append(weight_op)
+
+    payload = {}
+    all_values: dict[str, list[float]] = {}
+    for layer_type, stats in by_type.items():
+        for key, values in stats.items():
+            value = float(sum(values) / max(1, len(values)))
+            payload[f"weight_update/{layer_type}/{key}/mean"] = value
+            all_values.setdefault(key, []).extend(values)
+    for key, values in all_values.items():
+        payload[f"weight_update/all/{key}/mean"] = float(sum(values) / max(1, len(values)))
+    if payload:
+        logger.log(payload, step=step)
+
+
 @torch.no_grad()
 def log_matrix_weight_spectra(
     model: GPT,
@@ -249,13 +454,14 @@ def log_matrix_weight_spectra(
     logger,
     *,
     log_relmuon_scales: bool = False,
+    relmuon_scale_mode: str = "log1p",
     eps: float = 1e-8,
 ) -> None:
     """Log matrix weight spectrum diagnostics grouped by layer type.
 
     Raw singular-value summaries show the current weight spectra. For RelMuon,
-    normalized log1p scale summaries show how far its update spectrum moves away
-    from Muon's all-ones update spectrum.
+    scale summaries show how far its update spectrum moves away from Muon's
+    all-ones update spectrum.
     """
     if logger is None:
         return
@@ -269,10 +475,10 @@ def log_matrix_weight_spectra(
             continue
         sv = torch.linalg.svdvals(p.detach().float())
         sv_by_type.setdefault(layer_type, []).append(sv)
-        if log_relmuon_scales:
-            raw_scales = torch.log1p(sv.clamp(min=0.0))
-            rms = torch.sqrt(torch.mean(raw_scales.square()))
-            scales = (raw_scales + eps) / (rms + eps)
+        # Aligned scales depend on the update direction, not just the weight,
+        # so they cannot be reproduced here; log weight-only modes.
+        if log_relmuon_scales and relmuon_scale_mode in RELMUON_WEIGHT_ONLY_MODES:
+            scales = relmuon_weight_scales(p.detach(), scale_mode=relmuon_scale_mode, eps=eps)
             scale_by_type.setdefault(layer_type, []).append(scales)
 
     payload = {}
@@ -359,7 +565,13 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
     model_cfg = _model_config(cfg)
     model = GPT(model_cfg).to(device)
-    model.compile(dynamic=False)
+    compile_model = bool(cfg.get("compile", True))
+    if cfg.get("matrix_optimizer") == "input_muon" and compile_model:
+        print("input_muon uses forward hooks for input bases; disabling torch.compile")
+        compile_model = False
+        cfg["compile"] = False
+    if compile_model:
+        model.compile(dynamic=False)
 
     print(f"model: {model.num_params() / 1e6:.1f}M non-embedding params")
 
@@ -368,6 +580,11 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
     val_data = load_bin(f"{data_dir}/{cfg.get('val_bin', 'val.bin')}")
 
     dynmuon, adamw = build_optimizers(model, cfg)
+    input_muon_collector = (
+        InputMuonBasisCollector(model, dynmuon, cfg)
+        if isinstance(dynmuon, InputMuon)
+        else None
+    )
 
     checkpoint_enabled = bool(cfg.get("checkpoint_enabled", False))
     checkpoint_path = _checkpoint_path(cfg)
@@ -440,6 +657,9 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     logger=logger,
                 )
             if _TERMINATE_REQUESTED:
+                if input_muon_collector is not None:
+                    input_muon_collector.close()
+                _finish_logger(logger)
                 return model, logger
             t0 = time.perf_counter()
         if step == train_steps:
@@ -457,12 +677,21 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
         x, y = get_token_batch(train_data, batch_tokens, cfg["sequence_length"], device)
         losses: list[float] = []
+        if input_muon_collector is not None:
+            input_muon_collector.begin_step(step)
         for xb, yb in iter_microbatches(x, y, mbs):
             with amp_ctx:
                 _, loss = model(xb, yb)
                 loss = loss / (len(x) // mbs)
             loss.backward()
             losses.append(loss.item())
+        if input_muon_collector is not None:
+            input_muon_collector.end_step()
+
+        should_log_step = step % cfg.get("log_every", 10) == 0
+        weight_update_before = None
+        if should_log_step and logger is not None and cfg.get("log_weight_update_ratio", False):
+            weight_update_before = _matrix_param_snapshots(model)
 
         if clip:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
@@ -475,7 +704,7 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
         completed_step = step + 1
 
-        if step % cfg.get("log_every", 10) == 0:
+        if should_log_step:
             train_loss = float(sum(losses))
             print(f"step {completed_step:5d}/{train_steps} | loss {train_loss:.4f} | lr {lr_used:.2e}")
             if logger is not None:
@@ -484,14 +713,20 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     "lr": lr_used,
                     "tokens/train": completed_step * batch_tokens,
                 }, step=completed_step)
-            if cfg.get("log_weight_svd", False) and cfg.get("matrix_optimizer") in ("muon", "relmuon", "dynmuon"):
+            if cfg.get("log_weight_svd", False) and cfg.get("matrix_optimizer") in (
+                "muon", "relmuon", "dynmuon", "input_muon", "kaon",
+            ):
                 log_matrix_weight_spectra(
                     model,
                     completed_step,
                     logger,
                     log_relmuon_scales=cfg.get("matrix_optimizer") == "relmuon",
+                    relmuon_scale_mode=cfg.get("relmuon_scale_mode", "log1p"),
                     eps=cfg.get("relmuon_eps", 1e-8),
                 )
+            if cfg.get("log_weight_update_ratio", False) and weight_update_before is not None:
+                log_matrix_update_ratios(model, weight_update_before, completed_step, logger)
+            log_input_muon(model, dynmuon, completed_step, logger)
             log_routing(model, dynmuon, completed_step, logger)
 
         if _TERMINATE_REQUESTED:
@@ -507,6 +742,12 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                     cfg=cfg,
                     logger=logger,
                 )
+            if input_muon_collector is not None:
+                input_muon_collector.close()
+            _finish_logger(logger)
             return model, logger
 
+    if input_muon_collector is not None:
+        input_muon_collector.close()
+    _finish_logger(logger)
     return model, logger
