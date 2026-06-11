@@ -408,12 +408,21 @@ class DynMuonRoute(torch.optim.Optimizer):
       * ``schedule_modulated`` — **the router.** Follow the same global time
                                  schedule, but nudge each layer by how its
                                  gradient geometry deviates from a reference:
-                                     p_{t,l} = clip( p_t + beta·(proxy_l − ref_l) )
-                                 ``dynamic_ref=True`` replaces ``ref_l`` with an
-                                 EMA of the cross-layer mean proxy, so the
-                                 schedule owns the global temporal trend and
-                                 the router responds only to per-layer
-                                 deviation.
+                                     p_{t,l} = clip( p_t + lean_l )
+                                 with ``lean_l = beta·(proxy_l − ref_l)`` and,
+                                 when ``lean_max`` is set, ``lean_l`` clipped to
+                                 ``[-lean_max, +lean_max]``. ``dynamic_ref=True``
+                                 replaces ``ref_l`` with an EMA of the
+                                 cross-layer mean proxy, so the schedule owns
+                                 the global temporal trend and the router
+                                 responds only to per-layer deviation.
+                                 ``lean_norm="zscore"`` divides the deviation by
+                                 an EMA of the cross-layer proxy std, making
+                                 ``beta`` "p-units per standard deviation":
+                                 heavy-tailed proxies (stable rank reaches
+                                 50+ on early layers) then cannot saturate the
+                                 router into a bang-bang controller pinned at
+                                 the clip boundaries.
       * ``stable_rank`` / ``snr`` / ``snr_ema`` / ``alignment`` — map the proxy
         straight to p through a per-layer-type logistic (``mu``, ``omega``);
         no time schedule.
@@ -448,6 +457,8 @@ class DynMuonRoute(torch.optim.Optimizer):
         beta: float = 0.1,
         dynamic_ref: bool = False,
         ref_decay: float = 0.9,
+        lean_norm: str = "raw",
+        lean_max: float | None = None,
         modulate_metric: str = "stable_rank",
         fixed_p: float = 0.0,
         tau_ratio: float = 0.04,
@@ -484,12 +495,17 @@ class DynMuonRoute(torch.optim.Optimizer):
             raise ValueError(f"routing_mode={routing_mode!r} requires total_steps > 0")
         if not 0.0 < snr_ema_decay < 1.0:
             raise ValueError(f"snr_ema_decay must be in (0, 1), got {snr_ema_decay}")
+        if lean_norm not in ("raw", "zscore"):
+            raise ValueError(f"lean_norm must be 'raw' or 'zscore', got {lean_norm!r}")
+        if lean_max is not None and lean_max <= 0:
+            raise ValueError(f"lean_max must be positive or None, got {lean_max}")
         defaults = dict(
             lr=lr, momentum=momentum, nesterov=nesterov, weight_decay=weight_decay,
             routing_mode=routing_mode, compute_mode=compute_mode, ns_variant=ns_variant,
             ns_steps=ns_steps, eps=eps, adjust_lr_fn=adjust_lr_fn, p_min=p_min,
             p_max=p_max, mu=mu, omega=omega, ref=ref, beta=beta,
             dynamic_ref=dynamic_ref, ref_decay=ref_decay,
+            lean_norm=lean_norm, lean_max=lean_max,
             modulate_metric=modulate_metric, fixed_p=fixed_p, tau_ratio=tau_ratio,
             width_ratio=width_ratio, total_steps=total_steps, magnitude=magnitude,
             spectrum=spectrum, track_proxies=track_proxies,
@@ -499,10 +515,12 @@ class DynMuonRoute(torch.optim.Optimizer):
         # Schedule step counter: incremented at the START of step(), so the
         # first scheduled step is 1 (reference DynMuon semantics).
         self._step_count = 0
-        # Running cross-layer mean of the routing proxy (for dynamic_ref): lets
-        # the schedule own the global/temporal trend while the router responds
-        # only to each layer's deviation from the network average.
+        # Running cross-layer mean/std of the routing proxy (for dynamic_ref
+        # and lean_norm="zscore"): lets the schedule own the global/temporal
+        # trend while the router responds only to each layer's deviation from
+        # the network average, measured in network-spread units.
         self._proxy_ema: float | None = None
+        self._proxy_std_ema: float | None = None
         # CPU RNG for spectrum="random" so the control is reproducible and
         # device-independent.
         self._spectrum_generator = torch.Generator()
@@ -515,6 +533,7 @@ class DynMuonRoute(torch.optim.Optimizer):
         sd["dynmuon_extras"] = {
             "step_count": self._step_count,
             "proxy_ema": self._proxy_ema,
+            "proxy_std_ema": self._proxy_std_ema,
             "spectrum_rng": self._spectrum_generator.get_state(),
         }
         return sd
@@ -526,6 +545,7 @@ class DynMuonRoute(torch.optim.Optimizer):
         if extras is not None:
             self._step_count = int(extras["step_count"])
             self._proxy_ema = extras["proxy_ema"]
+            self._proxy_std_ema = extras.get("proxy_std_ema")
             self._spectrum_generator.set_state(extras["spectrum_rng"])
 
     # -- routing -------------------------------------------------------------
@@ -544,12 +564,21 @@ class DynMuonRoute(torch.optim.Optimizer):
         if mode == "global_schedule":
             return self._p_schedule(group)
         if mode == "schedule_modulated":
-            # Global time arc + per-layer geometry nudge, clipped to [p_min, p_max].
-            # dynamic_ref: nudge relative to the running cross-layer mean (removes
+            # Global time arc + per-layer geometry lean, clipped to [p_min, p_max].
+            # dynamic_ref: lean relative to the running cross-layer mean (removes
             # the global temporal trend, leaving the per-layer deviation).
             ref = (self._proxy_ema if (group["dynamic_ref"] and self._proxy_ema is not None)
                    else group["ref"])
-            p = self._p_schedule(group) + group["beta"] * (x - ref)
+            deviation = x - ref
+            if group["lean_norm"] == "zscore":
+                # Per-std units: heavy-tailed proxies cannot saturate the
+                # router. Until the std EMA exists (first step), lean 0.
+                std = self._proxy_std_ema
+                deviation = 0.0 if not std else deviation / std
+            lean = group["beta"] * deviation
+            if group["lean_max"] is not None:
+                lean = max(-group["lean_max"], min(group["lean_max"], lean))
+            p = self._p_schedule(group) + lean
             return max(group["p_min"], min(group["p_max"], p))
         return logistic_route(x, group["p_min"], group["p_max"], group["mu"], group["omega"])
 
@@ -610,11 +639,21 @@ class DynMuonRoute(torch.optim.Optimizer):
                     x = self._update_param(param, group, noise_hook)
                     if x is not None:
                         step_proxies.append(x)
-        # Update the running cross-layer proxy mean (used by dynamic_ref next step).
+        # Update the running cross-layer proxy mean/std (used by dynamic_ref
+        # and lean_norm="zscore" on the next step). Only finite samples may
+        # enter: one NaN would latch the EMA to NaN permanently.
+        step_proxies = [v for v in step_proxies if math.isfinite(v)]
         if step_proxies:
             m = sum(step_proxies) / len(step_proxies)
+            var = sum((v - m) ** 2 for v in step_proxies) / len(step_proxies)
+            std = math.sqrt(var)
             decay = self.param_groups[0]["ref_decay"]
-            self._proxy_ema = m if self._proxy_ema is None else decay * self._proxy_ema + (1 - decay) * m
+            if self._proxy_ema is None:
+                self._proxy_ema, self._proxy_std_ema = m, std
+            else:
+                self._proxy_ema = decay * self._proxy_ema + (1 - decay) * m
+                self._proxy_std_ema = (std if self._proxy_std_ema is None
+                                       else decay * self._proxy_std_ema + (1 - decay) * std)
         return loss
 
     def _update_param(self, param, group, noise_hook) -> float | None:
@@ -643,6 +682,23 @@ class DynMuonRoute(torch.optim.Optimizer):
         track = group["track_proxies"]
         fro_M = float(torch.linalg.norm(M2.to(torch.float32)))
         sr = gamma = alpha = gamma_ema = float("nan")
+        if metric == "snr_ema":
+            # The EMA estimator consumes every gradient sample, including zero
+            # ones, so update it before the zero-momentum early exit.
+            gamma_ema = self._snr_ema_proxy(state, G2, group["snr_ema_decay"], eps)
+        if fro_M == 0.0:
+            # Zero momentum (e.g. step-1 gradients blocked by zero-initialized
+            # downstream weights): D(p) = 0 for every p, so the exponent is
+            # undefined and there is no proxy sample. Apply weight decay (the
+            # reference decays any param with a grad), skip the zero update,
+            # and contribute nothing to the cross-layer proxy statistics —
+            # a NaN here would latch the proxy EMA to NaN permanently.
+            if group["weight_decay"]:
+                param.mul_(1.0 - group["lr"] * group["weight_decay"])
+            state.update(last_p=float("nan"), last_sr=float("nan"),
+                         last_gamma=float("nan"), last_gamma_ema=float(gamma_ema),
+                         last_alpha=float("nan"))
+            return None
         if fro_M > 0.0:
             if track or metric == "stable_rank":
                 Xn = M2.to(torch.float32) / fro_M
@@ -655,8 +711,6 @@ class DynMuonRoute(torch.optim.Optimizer):
                 W2 = param.reshape(param.shape[0], -1) if param.dim() != 2 else param
                 num = float(torch.sum(W2.to(torch.float32) * M2.to(torch.float32)).abs())
                 alpha = num / (float(torch.linalg.norm(W2.to(torch.float32))) * fro_M + eps)
-        if metric == "snr_ema":
-            gamma_ema = self._snr_ema_proxy(state, G2, group["snr_ema_decay"], eps)
         proxies = {"stable_rank": sr, "snr": gamma, "snr_ema": gamma_ema, "alignment": alpha}
         x = proxies.get(metric) if metric is not None else None
 

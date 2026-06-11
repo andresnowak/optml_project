@@ -51,7 +51,9 @@ momentum: 0.95
 nesterov: true
 adjust_lr_fn: spectral_norm   # spectral_norm | rms_norm | none; Muon also supports keller_jordan
 muon_lr: 2.0e-2            # max matrix LR
-adam_lr: 6.0e-4           # embeddings / norms / biases
+adam_lr: 6.0e-4           # norms / biases (and embed unless embed_lr is set)
+embed_lr: 6.0e-3          # tied embedding/head LR (it carries the logit scale;
+                          # 6e-4 left embeddings near their init all run long)
 weight_decay: 0.1         # decoupled; applies to ALL matrix optimizers (incl. dynmuon)
 scalar_weight_decay: 0.0  # embeddings / biases / norm gains
 input_muon_rank: 64       # top input-subspace directions per matrix layer
@@ -99,7 +101,15 @@ route:
     # metric: alignment if you want a stronger attn-vs-mlp signal.)
     dynamic_ref: true
     ref_decay: 0.9
-    beta: 0.5                  # p units per unit proxy deviation from the mean
+    # The 20k FineWeb marathon showed RAW stable-rank deviations reach +55 on
+    # early layers: with beta on raw units the router saturates into a
+    # bang-bang controller pinned at [p_min, p_max] (7/72 matrices stuck at
+    # p=+1 even when the schedule said -0.25). zscore measures the deviation
+    # in EMA cross-layer-std units and lean_max bounds the total lean, so the
+    # router stays a *perturbation* of the schedule instead of overriding it.
+    lean_norm: zscore          # zscore (recommended) | raw (legacy)
+    lean_max: 0.25             # max |p_{t,l} - p_t|; null disables
+    beta: 0.15                 # p units per cross-layer std of the proxy
     attn:    {ref: 1.95}       # seed/fallback used only if dynamic_ref is off
     mlp:     {ref: 1.95}
     default: {ref: 1.95}

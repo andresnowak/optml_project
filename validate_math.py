@@ -387,6 +387,80 @@ def test_schedule_modulated_reduces_to_schedule_when_beta_zero():
     assert all(-0.25 - 1e-9 <= p <= 1.0 + 1e-9 for p in run_p(0.2))         # beta>0 in range
 
 
+def test_zscore_lean_is_bounded_and_reduces_to_schedule():
+    """With lean_norm='zscore' the lean is measured in cross-layer-std units
+    and clipped to lean_max, so a heavy-tailed proxy cannot pin layers at the
+    [p_min, p_max] boundaries (the marathon-run failure mode); beta=0 still
+    reduces exactly to the global schedule."""
+    torch.manual_seed(15)
+    # Two params with wildly different stable ranks: near-rank-one vs identity-like.
+    g_aniso = torch.outer(torch.randn(12), torch.randn(12)) + 0.01 * torch.randn(12, 12)
+    g_iso = torch.eye(12) + 0.01 * torch.randn(12, 12)
+
+    def run(beta, lean_max):
+        wa = torch.zeros(12, 12, requires_grad=True)
+        wb = torch.zeros(12, 12, requires_grad=True)
+        opt = DynMuonRoute([wa, wb], routing_mode="schedule_modulated",
+                           compute_mode="reference", beta=beta, dynamic_ref=True,
+                           lean_norm="zscore", lean_max=lean_max,
+                           modulate_metric="stable_rank", total_steps=8,
+                           adjust_lr_fn=None)
+        ps = []
+        for _ in range(6):
+            wa.grad, wb.grad = g_aniso.clone(), g_iso.clone()
+            opt.step()
+            ps.append((opt.state[wa]["last_p"], opt.state[wb]["last_p"]))
+        return ps
+
+    sched = [logistic_schedule_p(k, 8, -0.25, 1.0, 0.04, 0.04) for k in range(1, 7)]
+    # beta=0: exactly the schedule for both layers.
+    for (pa, pb), pt in zip(run(0.0, 0.25), sched):
+        assert abs(pa - pt) < 1e-9 and abs(pb - pt) < 1e-9
+    # beta>0: leans differ across layers but never exceed lean_max.
+    routed = run(0.3, 0.2)
+    for (pa, pb), pt in zip(routed, sched):
+        assert abs(pa - pt) <= 0.2 + 1e-9
+        assert abs(pb - pt) <= 0.2 + 1e-9
+    assert any(pb > pa for (pa, pb) in routed[1:]), "isotropic layer should lean higher"
+
+
+def test_zero_first_step_gradient_does_not_poison_proxy_ema():
+    """Regression test for the sweep-run failure: with zero-initialized
+    projection layers, q/k/v/fc matrices receive exactly zero gradients on
+    step 1; their undefined proxy must NOT enter the cross-layer EMA (a single
+    NaN latches the EMA to NaN forever, and the NaN lean then resolves to
+    p = p_max through Python's min/max, pinning every layer at +1.0)."""
+    torch.manual_seed(16)
+    w_live = torch.zeros(8, 12, requires_grad=True)   # has gradient from step 1
+    w_dead = torch.zeros(8, 12, requires_grad=True)   # zero gradient on step 1
+    opt = DynMuonRoute([w_live, w_dead], lr=0.02, weight_decay=0.5,
+                       routing_mode="schedule_modulated", compute_mode="reference",
+                       beta=0.15, dynamic_ref=True, lean_norm="zscore",
+                       lean_max=0.25, modulate_metric="stable_rank",
+                       total_steps=20, adjust_lr_fn=None)
+    g = torch.randn(8, 12)
+    w_live.grad = g.clone()
+    w_dead.grad = torch.zeros(8, 12)
+    opt.step()
+    # dead param: weight decay still applied, update zero, no proxy sample
+    assert torch.equal(w_dead.detach(), torch.zeros(8, 12))  # was zero anyway
+    assert math.isnan(opt.state[w_dead]["last_p"])
+    assert math.isfinite(opt.state[w_live]["last_p"])
+    assert opt._proxy_ema is not None and math.isfinite(opt._proxy_ema)
+
+    # from step 2 the dead param has momentum; everyone follows the schedule
+    for k in range(2, 21):
+        w_live.grad = g.clone()
+        w_dead.grad = g.clone()
+        opt.step()
+    assert math.isfinite(opt._proxy_ema)
+    p_t = logistic_schedule_p(20, 20, -0.25, 1.0, 0.04, 0.04)
+    for w in (w_live, w_dead):
+        p_final = opt.state[w]["last_p"]
+        assert abs(p_final - p_t) <= 0.25 + 1e-9, \
+            f"p={p_final} should track the schedule {p_t:.3f} within lean_max"
+
+
 def test_global_schedule_anneals():
     """p_t runs p_max -> p_min across total_steps (step counter starts at 1)."""
     w = torch.zeros(6, 8, requires_grad=True)

@@ -41,6 +41,9 @@ def main() -> None:
     ap.add_argument("--kaon-output-scale", dest="kaon_output_scale", type=float)
     ap.add_argument("--noise-lambda", dest="noise_lambda", type=float)
     ap.add_argument("--beta", type=float)
+    ap.add_argument("--lean-norm", dest="lean_norm", choices=["raw", "zscore"])
+    ap.add_argument("--lean-max", dest="lean_max", type=float)
+    ap.add_argument("--embed-lr", dest="embed_lr", type=float)
     ap.add_argument("--modulate-metric", dest="modulate_metric",
                     choices=["stable_rank", "snr", "snr_ema", "alignment"])
     ap.add_argument("--dynamic-ref", dest="dynamic_ref", action=argparse.BooleanOptionalAction)

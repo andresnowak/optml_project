@@ -393,20 +393,49 @@ directions, which is exactly where gradient noise lives
 $p_{\max}$, not away from it.
 
 \paragraph{Schedule-modulated mode (the router).} Each layer follows the
-shared clock \eqref{eq:schedule} plus a clipped local lean:
+shared clock \eqref{eq:schedule} plus a bounded local lean:
 \begin{equation}
 \label{eq:router}
-p_{t,l} \;=\; \clip\Bigl(p_t + \beta\,\bigl(x_{t,l} - \bar{x}_t\bigr),\;
+p_{t,l} \;=\; \clip\Bigl(p_t +
+\clip\bigl(\beta\, z_{t,l},\, -\ell_{\max},\, +\ell_{\max}\bigr),\;
 p_{\min},\; p_{\max}\Bigr),
+\qquad
+z_{t,l} = \frac{x_{t,l} - \bar{x}_t}{\tilde{\sigma}_t},
 \end{equation}
-where $\bar x_t$ is either a fixed per-layer-type reference or (default,
-\texttt{dynamic\_ref}) an exponential moving average of the cross-layer mean
-proxy, $\bar x_t = (1-\beta_r)\sum_{s<t} \beta_r^{\,t-1-s}\,
-\mathrm{mean}_l\, x_{s,l}$ with decay $\beta_r$. Subtracting $\bar x_t$
-removes the global temporal trend of the proxy (which the clock already
-owns), so the lean carries only the genuinely per-layer signal. At
+where $\bar x_t$ and $\tilde\sigma_t$ are exponential moving averages (decay
+$\beta_r$) of the cross-layer mean and cross-layer standard deviation of the
+proxy, both computed from steps $s < t$ (\texttt{lean\_norm="zscore"};
+$\tilde\sigma_t \equiv 1$ recovers the legacy raw lean). Subtracting
+$\bar x_t$ removes the global temporal trend of the proxy (which the clock
+already owns); dividing by $\tilde\sigma_t$ makes $\beta$ a gain in
+``$p$-units per cross-layer standard deviation''. The inner clip
+$\ell_{\max}$ bounds the total lean. Both guards are necessary in practice:
+the stable-rank proxy is heavy-tailed (deviations exceeding $+50$ on early
+layers were logged in the 20k-step run), and with a raw gain the router
+saturates into a bang-bang controller whose exponents sit at the
+$[p_{\min}, p_{\max}]$ boundaries rather than perturbing the schedule. At
 $\beta = 0$, \eqref{eq:router} reduces exactly to the reference schedule
-(test \texttt{test\_schedule\_modulated\_reduces\_to\_schedule\_when\_beta\_zero}).
+(test \texttt{test\_schedule\_modulated\_reduces\_to\_schedule\_when\_beta\_zero});
+boundedness and layer separation are covered by
+\texttt{test\_zscore\_lean\_is\_bounded\_and\_reduces\_to\_schedule}.
+
+Two specification details matter in practice. First, a layer with vanishing
+momentum ($\|M\|_F = 0$, e.g.\ matrices whose step-1 gradients are blocked by
+zero-initialized downstream projections) has no defined exponent and a zero
+update for every $p$; it contributes \emph{no} sample to the cross-layer
+statistics (a single NaN sample would latch the EMA permanently, which
+silently pinned every layer at $p_{\max}$ in early sweep runs; regression
+test \texttt{test\_zero\_first\_step\_gradient\_does\_not\_poison\_proxy\_ema}).
+Second, under \texttt{compute\_mode="reference"} the per-layer exponent is
+applied through the \emph{discontinuous} three-phase transform
+\eqref{eq:threephase}: a lean that crosses $p = 0.25$ switches between the
+raw-momentum branch ($\|D\|_F = \|M\|_F$) and the polar branch
+($\|D\|_F \approx \sqrt{k}$), a norm jump of order $\sqrt{k}/\|M\|_F$. With
+$\ell_{\max} = 0.25$ this can only happen while the clock itself traverses
+$[0, 0.5]$ ($\approx 4\%$ of training under the default schedule); studies
+that route throughout training should use the continuous paths
+(\texttt{compute\_mode="ns"}) or the magnitude-decoupled variant
+\eqref{eq:polarfro}.
 The per-layer exponent is applied through the same transform as the baseline
 (three-phase in \texttt{reference} mode, exact in \texttt{svd}/\texttt{ns}
 modes), so the router is a strict generalization of DynMuon: it differs from

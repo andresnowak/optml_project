@@ -17,15 +17,20 @@ via `D(p) = U Σ^p Vᵀ`:
 early, suppress it late. **DynMuon-Route** keeps that clock but lets each layer lean:
 
 ```
-p_{t,l} = clip( p_t  +  beta · (gₗ − ḡₜ) ,  −0.25, 1.0 )
-          └──┬──┘        └────┬────┘
-        shared clock      personal lean
+p_{t,l} = clip( p_t  +  clip(beta · (gₗ − ḡₜ)/σ̃ₜ, ±lean_max) ,  −0.25, 1.0 )
+          └──┬──┘             └──────┬──────┘
+        shared clock           personal lean (z-scored)
 ```
 
-where `gₗ` is layer `l`'s gradient concentration (stable rank) and `ḡₜ` is the
-network's **running average** of it. In one breath: *everyone follows the same clock,
-but a layer whose gradient is more lopsided than its peers right now leans `p` down
-(suppress that direction harder); a more balanced layer leans up.*
+where `gₗ` is layer `l`'s gradient concentration (stable rank), `ḡₜ` is the
+network's **running average** of it, and `σ̃ₜ` the running cross-layer spread
+(`lean_norm: zscore`). In one breath: *everyone follows the same clock, but a layer
+whose gradient is more lopsided than its peers right now leans `p` down (suppress
+that direction harder); a more balanced layer leans up.* The z-scoring and
+`lean_max` exist because stable rank is heavy-tailed (deviations of +50 on early
+layers): with a raw gain the router saturates into a bang-bang controller pinned at
+the clip boundaries (observed in the 20k marathon run: 7/72 matrices stuck at p=+1
+while the schedule said −0.25).
 
 Why the **deviation** `gₗ − ḡₜ` and not `gₗ` itself: stable rank drifts globally over
 training (~1 → 4), so a layer's absolute value mostly encodes *what time it is* — which
@@ -47,7 +52,8 @@ per-layer-type proxy distributions and suggested `ref`/`beta`. The pure-logistic
 | Metric | Definition | Routing logic |
 |--------|------------|---------------|
 | Stable rank `sr` (default) | `‖M‖_F² / σ_max²` | low sr (anisotropic) → p → -0.25; high sr → p ≥ 0 |
-| SNR proxy `γ` | `‖M‖_F / ‖G - M‖_F` | low γ (noisy) → p ≥ 0; high γ → negative allowed |
+| SNR proxy `γ` | `‖M‖_F / ‖G - M‖_F` | low γ (noisy) → p → p_max (raw momentum downweights weak dirs); high γ → negative allowed |
+| EMA SNR `γ̂` (`snr_ema`) | bias-corrected `‖EMA(G)‖ / std(G)` | same orientation as γ, but a real signal-to-noise estimate |
 | Alignment `α` | `|tr(Wᵀ M)| / (‖W‖_F‖M‖_F)` | high α → p → 1; low α → p → 0 |
 
 Mapping: `p = p_min + (p_max - p_min) / (1 + exp(-(x - μ)/ω))`, per-layer-type
@@ -55,16 +61,27 @@ Mapping: `p = p_min + (p_max - p_min) / (1 + exp(-(x - μ)/ω))`, per-layer-type
 
 ## Compute backends
 
-- `compute_mode="svd"` — exact `U Σ^p Vᵀ` via SVD (validation / debugging).
-- `compute_mode="ns"` — fast path using `U Σ^p Vᵀ = A^{p/2} Y_μ`, where `Y_μ` is the
-  Newton-Schulz polar factor (`ns_variant`: `quintic`, the reference DynMuon tuned
-  5-step iteration, or `cubic`, the textbook `1.5X - 0.5XXᵀX`) and `A = X_n X_nᵀ` is
-  the small Gram matrix whose symmetric eigendecomposition gives `A^{p/2}` (and
+- `compute_mode="reference"` (default) — the **released DynMuon transform,
+  bit-matched** (verified in `validate_reference.py` against vendored reference
+  code): 3-phase switch (`p ≥ 0.25` → raw momentum; `0 ≤ p < 0.25` → bf16 quintic
+  Newton-Schulz polar; `p < 0` → `fast_spectral` order-2 Taylor with the `‖M‖^p`
+  back-scale), bf16 update quantization, decoupled weight decay at the base LR.
+- `compute_mode="svd"` — exact continuous `U Σ^p Vᵀ` on the **raw** spectrum
+  (float32, pseudo-power rank tolerance; validation / spectrum controls).
+- `compute_mode="ns"` — continuous `U Σ^p Vᵀ` via `‖M‖^p · A^{p/2} Y_μ`, where
+  `Y_μ` is the Newton-Schulz polar factor (`ns_variant`: `quintic` or `cubic`) and
+  `A = X_n X_nᵀ` is the small Gram matrix (eigendecomposition gives `A^{p/2}` and
   `λ_max` for the stable rank).
 
+Orthogonal experiment knobs (see `math.tex` §3.1/§6): `magnitude: polar_fro`
+rescales every update to `‖D‖_F = sqrt(min(m,n))` so `p` changes only the spectrum
+*shape* (without it, moving `p` from 1 to 0 multiplies the update norm by ~27 at
+768-dim — the p-schedule doubles as an implicit LR schedule); `spectrum: random |
+inverted` are Frobenius-norm-preserving Kaon-style controls (`compute_mode: svd`).
+
 Shape-aware LR scaling is controlled by `adjust_lr_fn` in YAML. The default is
-`spectral_norm`, matching DynMuon's `sqrt(fan_out/fan_in)` rule. Muon also supports
-`keller_jordan` and `none`; DynMuon accepts only `spectral_norm` or `none`.
+`spectral_norm`, matching DynMuon's `sqrt(fan_out/fan_in)` rule. DynMuon also
+supports `rms_norm`; Muon also supports `keller_jordan`.
 
 ## Layout
 
@@ -104,18 +121,22 @@ data/
 |--------|--------|-----|
 | `configs/adamw.yaml` | AdamW | `matrix_optimizer: adamw` (matrix params use `weight_decay`; aux params use `scalar_weight_decay`) |
 | `configs/muon.yaml` | Muon | `matrix_optimizer: muon` (Track-3-style Muon) |
-| `configs/dynmuon.yaml` | DynMuon | `routing_mode: global_schedule` (logistic p_t) |
-| `configs/route.yaml` | **DynMuon-Route** | `routing_mode: schedule_modulated` (per-layer router) |
+| `configs/dynmuon.yaml` | DynMuon | `routing_mode: global_schedule` (reference-exact) |
+| `configs/route.yaml` | **DynMuon-Route** | `routing_mode: schedule_modulated` (z-scored per-layer router) |
+| `configs/route_decoupled.yaml` | Route, decoupled | route + `magnitude: polar_fro` (pure spectrum-shape routing) |
+| `configs/relmuon_*.yaml` | RelMuon | weight-spectrum scales (`log1p`, `rms`, `complete`, plus `log1p_aligned` via `relmuon_scale_mode`) |
 
 Run any single method: `python train.py --config configs/<method>.yaml`.
 
 ### Ablation knobs & sweeps
 
 `train.py` exposes a small set of config-key overrides for ad-hoc runs:
-`--seed`, `--routing-mode`, `--compute-mode`, `--ns-variant`, `--train-steps`,
-`--batch-size`, `--sequence-length`, `--mbs`, `--val-tokens`, `--val-loss-every`,
-`--warmup-steps`, `--min-lr-ratio`, `--muon-lr`, `--adam-lr`,
-`--weight-decay`, `--beta`,
+`--seed`, `--routing-mode`, `--compute-mode`, `--ns-variant`, `--magnitude`,
+`--spectrum`, `--track-proxies/--no-track-proxies`, `--snr-ema-decay`,
+`--train-steps`, `--batch-size`, `--sequence-length`, `--mbs`, `--val-tokens`,
+`--val-loss-every`, `--warmup-steps`, `--min-lr-ratio`, `--muon-lr`, `--adam-lr`,
+`--embed-lr`, `--weight-decay`, `--relmuon-scale-mode`, `--relmuon-scale-cap`,
+`--beta`, `--lean-norm`, `--lean-max`,
 `--modulate-metric`, `--dynamic-ref/--no-dynamic-ref`, `--noise-lambda`,
 `--run-name`, `--wandb-group`, `--wandb-project`, `--wandb-entity`, `--device`,
 and `--wandb`.
@@ -187,7 +208,7 @@ optimizer step is `batch_size * sequence_length`.
 
 ```bash
 uv sync
-uv run pytest validate_math.py                         # spectral-math unit tests
+uv run pytest validate_math.py validate_reference.py   # spectral math + reference parity
 uv run python data/prepare_wikitext.py                  # default small/base data
 uv run python data/prepare_fineweb.py 500M              # gpt124m data: 5 shards ~= 1 GB
 uv run python train.py --config configs/small.yaml --train-steps 50   # smoke test

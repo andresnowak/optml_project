@@ -14,17 +14,28 @@ from .relmuon import RelMuon
 
 
 def _adamw_aux_groups(split, cfg: dict) -> list[dict]:
-    params = split.embed + split.scalar
-    if not params:
-        return []
-    lr = cfg["adam_lr"]
-    return [{
-        "params": params,
-        "name": "aux",
-        "lr": lr,
-        "initial_lr": lr,
-        "weight_decay": cfg.get("scalar_weight_decay", 0.0),
-    }]
+    groups = []
+    if split.embed:
+        # The tied embedding/head carries the logit scale; it usually wants a
+        # higher LR than biases/gains (embed_lr defaults to adam_lr).
+        lr = cfg.get("embed_lr", cfg["adam_lr"])
+        groups.append({
+            "params": split.embed,
+            "name": "embed",
+            "lr": lr,
+            "initial_lr": lr,
+            "weight_decay": cfg.get("scalar_weight_decay", 0.0),
+        })
+    if split.scalar:
+        lr = cfg["adam_lr"]
+        groups.append({
+            "params": split.scalar,
+            "name": "aux",
+            "lr": lr,
+            "initial_lr": lr,
+            "weight_decay": cfg.get("scalar_weight_decay", 0.0),
+        })
+    return groups
 
 
 def build_optimizers(model: nn.Module, cfg: dict):
@@ -150,6 +161,8 @@ def build_optimizers(model: nn.Module, cfg: dict):
         beta=cfg.get("beta", route_mode.get("beta", 0.1)),
         dynamic_ref=cfg.get("dynamic_ref", route_mode.get("dynamic_ref", False)),
         ref_decay=cfg.get("ref_decay", route_mode.get("ref_decay", 0.9)),
+        lean_norm=cfg.get("lean_norm", route_mode.get("lean_norm", "raw")),
+        lean_max=cfg.get("lean_max", route_mode.get("lean_max")),
         modulate_metric=cfg.get("modulate_metric", route_mode.get("metric", "stable_rank")),
         fixed_p=cfg.get("fixed_p", 0.0),
         tau_ratio=cfg.get("tau_ratio", 0.04),
