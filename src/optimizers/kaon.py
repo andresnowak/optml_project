@@ -67,7 +67,12 @@ def kaon_update(
     output_scale: float = 1.175,
     eps: float = 1e-7,
 ) -> Tensor:
-    """Build a Kaon matrix update with momentum and chaotic spectral shaping."""
+    """Build a Kaon matrix update with momentum and chaotic spectral shaping.
+
+    Uses the same EMA-scaled lookahead convention as Muon. Kaon's map
+    normalizes its input, so the positive scale relative to sum-form Nesterov
+    does not affect the shaped direction.
+    """
     momentum.lerp_(grad, 1.0 - mu)
     update = grad.lerp(momentum, mu) if nesterov else momentum
     return kaon_chaos_map(

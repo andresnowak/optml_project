@@ -36,7 +36,13 @@ def zeropower_via_newtonschulz5(G: Tensor, ns_steps: int = 12) -> Tensor:
 
 @torch.compile
 def muon_update(grad: Tensor, momentum: Tensor, mu: float = 0.95, nesterov: bool = True, ns_steps: int = 12) -> Tensor:
-    """Compiled Muon matrix update."""
+    """Compiled Muon matrix update.
+
+    The buffer is stored in EMA-scaled form. With ``nesterov=True`` the
+    pre-polar matrix is ``(1-mu)`` times the usual sum-form Nesterov direction
+    ``g + mu * (mu * B + g)``. Muon's polar step is scale-invariant, so this
+    matches the reference direction.
+    """
     momentum.lerp_(grad, 1.0 - mu)
     update = grad.lerp(momentum, mu) if nesterov else momentum
     return zeropower_via_newtonschulz5(update, ns_steps)

@@ -51,8 +51,9 @@ Fix one matrix parameter $W \in \mathbb{R}^{m \times n}$ (a hidden linear
 layer; embeddings, output heads, biases and gains are excluded and optimized
 by AdamW, following standard Muon practice~\cite{jordan2024muon}). Let
 $G_t = \nabla_W \mathcal{L}_t$ be the stochastic gradient at step
-$t = 1, 2, \dots$ The momentum buffer $B_t$ and the (Nesterov) momentum
-matrix $M_t$ are
+$t = 1, 2, \dots$ The matrix optimizers use the Muon/DynMuon lookahead
+momentum convention. In the released DynMuon reference this is stored in
+sum form as
 \begin{equation}
 \label{eq:momentum}
 B_t = \mu B_{t-1} + G_t, \qquad B_0 = 0, \qquad
@@ -61,7 +62,13 @@ B_t & \text{otherwise,}\end{cases}
 \end{equation}
 with $\mu = 0.95$ by default. Note the buffer is the \emph{sum} form (not an
 exponential moving average): $\|B_t\|$ approaches $\|G\|/(1-\mu)$ for
-stationary gradients. This matches the reference DynMuon exactly.
+stationary gradients. This matches the reference DynMuon exactly. Some
+Muon-style implementations in this repository store the equivalent
+EMA-scaled buffer $\widetilde B_t=(1-\mu)B_t$ and form
+$\widetilde M_t=(1-\mu)M_t$; because Muon, RelMuon, InputMuon, and Kaon
+normalize or replace the update spectrum, this positive scalar does not change
+their direction. AdamW auxiliary parameters use Adam moments and should not be
+described as Nesterov.
 
 Throughout, $M = U \Sigma V^\top$ denotes a \emph{thin} SVD: for
 $k = \min(m,n)$, $U \in \mathbb{R}^{m\times k}$ and $V \in \mathbb{R}^{n\times k}$

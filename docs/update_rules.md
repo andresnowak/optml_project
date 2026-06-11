@@ -6,8 +6,8 @@ values of the matrix direction.
 
 ## Common Setup
 
-For a matrix parameter $W_t \in \mathbb{R}^{m \times n}$ with gradient $G_t$, keep a
-momentum buffer $B_t$:
+For a matrix parameter $W_t \in \mathbb{R}^{m \times n}$ with gradient $G_t$,
+the DynMuon reference keeps a sum-form momentum buffer $B_t$:
 
 $$
 B_t = \mu B_{t-1} + G_t.
@@ -24,6 +24,12 @@ Without Nesterov:
 $$
 M_t = B_t.
 $$
+
+Some Muon-style optimizers in this repository store the equivalent EMA-scaled
+buffer $\tilde B_t=(1-\mu)B_t$ and form $\tilde M_t=(1-\mu)M_t$. This is the
+same lookahead direction up to a positive scalar, which does not affect Muon,
+RelMuon, InputMuon, or Kaon after their spectral normalization/shaping. AdamW
+fallback parameters use Adam moments, not Nesterov.
 
 All spectral methods take the thin SVD:
 
@@ -334,4 +340,3 @@ W <- W - lr_t * shape_scale * D
 | RelMuon | from $M_t$ | normalized $\sigma_i(W_t)$ |
 | Random spectra | from $M_t$ | normalized random positive values |
 | Inverted spectra | from $M_t$ | normalized reversed $\sigma_i(M_t)$ |
-

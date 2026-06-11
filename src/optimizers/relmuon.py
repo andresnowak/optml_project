@@ -95,7 +95,9 @@ def relmuon_update(
 
     ``scale_cap`` (trust cap) clamps the final scales from above; it bounds the
     update's spectral norm by ``scale_cap`` and is the stability guard for the
-    unnormalized ``complete`` mode.
+    unnormalized ``complete`` mode. The momentum buffer is stored in the same
+    EMA-scaled convention as Muon; with ``nesterov=True`` it has the same
+    singular vectors as the sum-form Nesterov direction.
     """
     momentum.lerp_(grad, 1.0 - mu)
     update = grad.lerp(momentum, mu) if nesterov else momentum

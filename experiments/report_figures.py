@@ -5,8 +5,8 @@ Every figure reads the local dumps produced by ``experiments/pull_wandb.py``
 report is reproducible offline from one pull. Figures are intentionally
 minimal: one panel, labeled axes, no styling beyond defaults.
 
-    python experiments/report_figures.py bowls
-    python experiments/report_figures.py curves --runs bowl_muon_mlr0p02,bowl_dynmuon_mlr0p02
+    python experiments/report_figures.py lr_sweep
+    python experiments/report_figures.py losses
     python experiments/report_figures.py depth --run route_fill_beta0p15_mlr0p02_20260611_routefill
     python experiments/report_figures.py beta --lr 0p02
     python experiments/report_figures.py proxies
@@ -94,7 +94,16 @@ def _flt(row: dict, key: str) -> float | None:
 
 # -- figures -------------------------------------------------------------------
 
-def fig_bowls(args) -> None:
+def _save_aliases(fig, *names: str) -> None:
+    os.makedirs(OUT_DIR, exist_ok=True)
+    for name in names:
+        for ext in ("pdf", "png"):
+            fig.savefig(os.path.join(OUT_DIR, f"{name}.{ext}"), bbox_inches="tight", dpi=160)
+        print(f"wrote {OUT_DIR}/{name}.pdf")
+    plt.close(fig)
+
+
+def fig_lr_sweep(args) -> None:
     """Final validation loss vs matrix LR, one line per method (log-x)."""
     rows = _load_summaries()
     fig, ax = plt.subplots(figsize=(4.2, 3.0))
@@ -119,13 +128,18 @@ def fig_bowls(args) -> None:
         xs, ys = zip(*pts)
         line, = ax.plot(xs, ys, marker="o", ms=4, label=label)
         best = min(pts, key=lambda p: p[1])
-        ax.plot([best[0]], [best[1]], marker="*", ms=13, color=line.get_color(), zorder=5)
+        best_is_boundary = best == pts[0] or best == pts[-1]
+        marker = "<" if best == pts[0] else (">" if best == pts[-1] else "*")
+        face = "white" if best_is_boundary else line.get_color()
+        ax.plot([best[0]], [best[1]], marker=marker, ms=11,
+                markerfacecolor=face, markeredgecolor=line.get_color(),
+                markeredgewidth=1.8, color=line.get_color(), zorder=5)
     ax.set_xscale("log")
     ax.set_xlabel("matrix learning rate")
     ax.set_ylabel("final validation loss")
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
-    _save(fig, "lr_bowls")
+    _save_aliases(fig, "lr_sweep", "lr_bowls")
 
 
 def fig_curves(args) -> None:
@@ -147,6 +161,50 @@ def fig_curves(args) -> None:
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
     _save(fig, args.out or "loss_curves")
+
+
+def _filter_from_step(steps: list[int], vals: list[float], start_step: int) -> tuple[list[int], list[float]]:
+    kept = [(s, v) for s, v in zip(steps, vals) if s >= start_step and v > 0]
+    return [s for s, _ in kept], [v for _, v in kept]
+
+
+def _fig_loss_metric(metric: str, out: str, start_step: int) -> None:
+    """Late-training loss curves with log y-scale.
+
+    The first validation/train points are dominated by the shared initialization
+    loss. Cropping them makes the optimizer differences visible without
+    changing the underlying data.
+    """
+    runs = [
+        ("bowl_muon_mlr0p02", "Muon"),
+        ("bowl_dynmuon_mlr0p02", "DynMuon"),
+        ("route_lrfix_decoupled_ref_mlr0p02_20260611_lrfix", "Magnitude-decoupled"),
+    ]
+    fig, ax = plt.subplots(figsize=(4.2, 3.0))
+    for run, label in runs:
+        hist = _find_history(run)
+        if hist is None:
+            print(f"  (missing history for {run})")
+            continue
+        steps, vals = _series(hist, metric)
+        steps, vals = _filter_from_step(steps, vals, start_step)
+        if not steps:
+            print(f"  (no {metric} points after step {start_step} for {run})")
+            continue
+        ax.plot(steps, vals, marker="o" if metric == "val/loss" else None,
+                ms=3, lw=1.8, label=label)
+    ax.set_yscale("log")
+    ax.set_xlabel("step")
+    ax.set_ylabel(metric.replace("/", " "))
+    ax.grid(alpha=0.3, which="both")
+    ax.legend(fontsize=8)
+    _save(fig, out)
+
+
+def fig_losses(args) -> None:
+    start_step = getattr(args, "start_step", 125)
+    _fig_loss_metric("train/loss", "train_loss_late", start_step)
+    _fig_loss_metric("val/loss", "val_loss_late", start_step)
 
 
 def fig_depth(args) -> None:
@@ -182,6 +240,7 @@ def fig_depth(args) -> None:
     ax.axhline(0.0, color="grey", lw=0.8, ls=":")
     ax.set_xlabel("block depth")
     ax.set_ylabel(r"mean$_t\,(p_{t,\ell} - p_t)$")
+    ax.set_title("Routed exponent by depth", fontsize=10)
     ax.legend(fontsize=7, ncol=2)
     ax.grid(alpha=0.3)
     _save(fig, "depth_routing")
@@ -336,12 +395,15 @@ def fig_cost(args) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("bowls")
+    sub.add_parser("lr_sweep")
+    sub.add_parser("bowls")  # backward-compatible alias
     c = sub.add_parser("curves")
     c.add_argument("--runs", required=True)
     c.add_argument("--labels")
     c.add_argument("--ymax", type=float)
     c.add_argument("--out")
+    l = sub.add_parser("losses")
+    l.add_argument("--start-step", dest="start_step", type=int, default=125)
     d = sub.add_parser("depth")
     d.add_argument("--run", required=True)
     d.add_argument("--total-steps", dest="total_steps", type=int, default=1526)
@@ -354,9 +416,17 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.cmd == "all":
-        fig_bowls(args)
+        fig_lr_sweep(args)
+        args.start_step = 125
+        fig_losses(args)
         fig_svd_ns(args)
         fig_cost(args)
+        try:
+            args.run = "route_0p2"
+            args.total_steps = 1526
+            fig_depth(args)
+        except SystemExit as e:
+            print(f"skip depth: {e}")
         for fn, label in ((fig_beta, "beta"), (fig_proxies, "proxies")):
             try:
                 args.lr = "0p02"
@@ -364,7 +434,8 @@ def main() -> None:
             except SystemExit as e:
                 print(f"skip {label}: {e}")
         return
-    {"bowls": fig_bowls, "curves": fig_curves, "depth": fig_depth, "beta": fig_beta,
+    {"lr_sweep": fig_lr_sweep, "bowls": fig_lr_sweep, "curves": fig_curves,
+     "losses": fig_losses, "depth": fig_depth, "beta": fig_beta,
      "proxies": fig_proxies, "svd_ns": fig_svd_ns, "cost": fig_cost}[args.cmd](args)
 
 

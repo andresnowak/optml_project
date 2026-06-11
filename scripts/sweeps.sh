@@ -9,7 +9,7 @@
 #
 # Phases (run them IN ORDER; phases 2-3 need the best LR from phase 1):
 #   scripts/sweeps.sh prep            # size the FineWeb cache for STEPS
-#   scripts/sweeps.sh bowls           # LR bowls: dynmuon / muon / adamw
+#   scripts/sweeps.sh bowls           # LR sweeps: dynmuon / muon / adamw
 #   scripts/sweeps.sh route 0.2       # router arms at the best dynmuon LR
 #   scripts/sweeps.sh controls 0.2    # spectrum-shape controls at that LR
 #   scripts/sweeps.sh seeds 0.2       # seed replicates of dynmuon vs route
@@ -18,8 +18,8 @@
 #   * DRY_RUN=1 scripts/sweeps.sh bowls   prints jobs without submitting.
 #   * Run names are unique per arm -> unique checkpoint dirs; RunAI
 #     preemption resumes exactly (optimizer schedule state is checkpointed).
-#   * The embedding LR is pinned (configs embed_lr) so LR bowls move ONLY the
-#     matrix LR; the adamw bowl moves adam_lr, which is its matrix LR.
+#   * The embedding LR is pinned (configs embed_lr) so LR sweeps move ONLY the
+#     matrix LR; the adamw sweep moves adam_lr, which is its matrix LR.
 #   * DATA BUDGET: gpt124m's batch is 262k tokens/step. The default 500M-token
 #     FineWeb cache covers ~1900 steps without repetition. `prep` downloads
 #     ceil(STEPS*262k) tokens so no sweep silently trains multiple epochs.
@@ -51,7 +51,7 @@ submit() {
 
 lr_tag() { echo "$1" | tr '.' 'p'; }   # 0.05 -> 0p05 (job-name safe)
 
-cmd="${1:?usage: $0 prep|bowls|route <lr>|controls <lr>|seeds <lr>}"
+cmd="${1:?usage: $0 prep|bowls|bowls-left|route <lr>|controls <lr>|seeds <lr>|relmuon-bowls|relmuon-attention|relmuon-compare|kaon <lr>|proxies <lr>|final <lr>}"
 shift || true
 
 case "${cmd}" in
@@ -64,7 +64,7 @@ prep)
     ;;
 
 bowls)
-    # Phase 1 — LR bowls (one epoch max; see DATA BUDGET above).
+    # Phase 1 — LR sweeps (one epoch max; see DATA BUDGET above).
     for lr in 0.02 0.05 0.1 0.2 0.4 0.8; do
         submit bowl_dynmuon "bowl_dynmuon_mlr$(lr_tag ${lr})" configs/dynmuon.yaml \
             --muon-lr "${lr}"
@@ -81,12 +81,11 @@ bowls)
     ;;
 
 bowls-left)
-    # Phase 1b — close the bowls on the LEFT. The 2026-06-11 sweep (fixed
-    # init/embed LR) bottoms out at the 0.02 edge for both muon (3.6465) and
-    # dynmuon (3.6502); the old upward trend was an artifact of the broken
-    # embedding setup. Submits only the missing points (run names must not
-    # collide with finished checkpoints).
-    for lr in 0.005 0.01; do
+    # Phase 1b — close the matrix-optimizer sweeps on the LEFT. The current
+    # completed Muon/DynMuon curves have their best sampled point at the 0.02
+    # boundary, so these points are required before calling them "bowls" or
+    # claiming the optimum is bracketed.
+    for lr in 0.001 0.002 0.005 0.01; do
         submit bowl_dynmuon "bowl_dynmuon_mlr$(lr_tag ${lr})" configs/dynmuon.yaml \
             --muon-lr "${lr}"
         submit bowl_muon "bowl_muon_mlr$(lr_tag ${lr})" configs/muon.yaml \
@@ -150,6 +149,49 @@ relmuon-bowls)
     done
     ;;
 
+relmuon-attention)
+    # Spatial ablation: keep RelMuon-log1p only on attention projection
+    # matrices, and optimize MLP/embedding/scalar parameters with AdamW.
+    for lr in 0.02 0.1 0.3 0.5; do
+        group="relmuon_attention"
+        name="relmuon_attention_log1p_mlr$(lr_tag ${lr})"
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+            echo "DRY: run_job.sh spatial --config configs/relmuon_attention.yaml --wandb" \
+                 "--wandb-project ${SWEEP_PROJECT} --wandb-group ${group}" \
+                 "--run-name ${name} --train-steps ${STEPS} --muon-lr ${lr}"
+        else
+            echo ">>> ${group} / ${name}"
+            "${HERE}/run_job.sh" spatial --config configs/relmuon_attention.yaml --wandb \
+                --wandb-project "${SWEEP_PROJECT}" --wandb-group "${group}" \
+                --run-name "${name}" --train-steps "${STEPS}" --muon-lr "${lr}"
+            sleep "${SLEEP_BETWEEN}"
+        fi
+    done
+    ;;
+
+relmuon-compare)
+    # Matched full-vs-attention-only RelMuon-log1p comparison.
+    # This is the clean comparison for the report: same W&B project, same
+    # training budget, same LRs, same naming convention.
+    for lr in 0.02 0.1 0.3 0.5; do
+        submit relmuon_compare "relmuon_full_log1p_mlr$(lr_tag ${lr})" configs/relmuon_log1p.yaml \
+            --muon-lr "${lr}"
+        group="relmuon_compare"
+        name="relmuon_attention_log1p_mlr$(lr_tag ${lr})"
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+            echo "DRY: run_job.sh spatial --config configs/relmuon_attention.yaml --wandb" \
+                 "--wandb-project ${SWEEP_PROJECT} --wandb-group ${group}" \
+                 "--run-name ${name} --train-steps ${STEPS} --muon-lr ${lr}"
+        else
+            echo ">>> ${group} / ${name}"
+            "${HERE}/run_job.sh" spatial --config configs/relmuon_attention.yaml --wandb \
+                --wandb-project "${SWEEP_PROJECT}" --wandb-group "${group}" \
+                --run-name "${name}" --train-steps "${STEPS}" --muon-lr "${lr}"
+            sleep "${SLEEP_BETWEEN}"
+        fi
+    done
+    ;;
+
 kaon)
     best="${1:?usage: $0 kaon <muon_lr>}"
     t="$(lr_tag "${best}")"
@@ -182,6 +224,7 @@ final)
     "$0" controls "${best}"
     "$0" kaon "${best}"
     "$0" relmuon-bowls
+    "$0" relmuon-attention
     "$0" proxies "${best}"
     ;;
 
