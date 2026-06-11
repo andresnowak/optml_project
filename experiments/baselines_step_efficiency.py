@@ -29,6 +29,9 @@ METHODS = [
     ("muon", "configs/muon.yaml"),
     ("dynmuon", "configs/dynmuon.yaml"),
     ("dynmuon_route", "configs/route.yaml"),
+    ("random_route", "configs/random_spectrum.yaml"),  # sanity check: random routing should be worse than stable-rank
+    ("relmuon", "configs/relmuon.yaml"),
+    ("inverted_spectrum", "configs/inverted_spectrum.yaml")
 ]
 OUT_DIR = os.path.join("results", "baselines")
 VAL_KEY = "val/loss"

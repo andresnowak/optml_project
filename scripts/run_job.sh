@@ -125,6 +125,8 @@ case "${CMD}" in
     _submit "${JOB_PREFIX}-exp2-${STAMP}" "${PROJECT_DIR}/experiments/exp2_noise_injection.py" "$@" ;;
   baselines)
     _submit "${JOB_PREFIX}-baselines-${STAMP}" "${PROJECT_DIR}/experiments/baselines_step_efficiency.py" "$@" ;;
+  spatial)
+    _submit "${JOB_PREFIX}-spatial-${STAMP}" "${PROJECT_DIR}/experiments/spatial_ablation.py" "$@" ;;
   logs)
     runai logs "${1:?usage: $0 logs <job-name>}" ;;
   delete)
@@ -132,6 +134,6 @@ case "${CMD}" in
   list)
     runai list ;;
   *)
-    echo "usage: $0 {prep|prep-fineweb|probe|sanity|single|exp1|exp2|baselines|logs|delete|list} [args]" >&2
+    echo "usage: $0 {prep|prep-fineweb|probe|sanity|single|exp1|exp2|baselines|spatial|logs|delete|list} [args]" >&2
     exit 1 ;;
 esac

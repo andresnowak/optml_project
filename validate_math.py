@@ -69,6 +69,28 @@ def _orient(X: torch.Tensor) -> torch.Tensor:
     return X.transpose(0, 1) if X.shape[0] > X.shape[1] else X
 
 
+def test_muon_ema_nesterov_matches_sum_form_direction_up_to_scale():
+    """Muon's stored EMA buffer is a scaled sum-form Nesterov direction.
+
+    DynMuon stores ``B_t = mu B_{t-1} + g_t`` and uses ``g_t + mu B_t``.
+    Muon stores ``B_ema = (1-mu) B`` and builds ``(1-mu) g_t + mu B_ema``.
+    These differ by the positive scalar ``1-mu`` when the old buffers are
+    consistently scaled, so polar/RelMuon/Kaon directions are unchanged.
+    """
+    mu = 0.95
+    g = torch.randn(5, 7)
+    b_sum_old = torch.randn(5, 7)
+    b_ema_old = (1.0 - mu) * b_sum_old
+
+    b_sum = mu * b_sum_old + g
+    m_sum = g + mu * b_sum
+
+    b_ema = mu * b_ema_old + (1.0 - mu) * g
+    m_ema = (1.0 - mu) * g + mu * b_ema
+
+    assert torch.allclose(m_ema, (1.0 - mu) * m_sum, atol=1e-6, rtol=1e-6)
+
+
 # ---------------------------------------------------------------------------
 # core spectral identities (math.tex §3)
 # ---------------------------------------------------------------------------

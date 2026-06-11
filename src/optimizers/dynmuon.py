@@ -72,8 +72,8 @@ ROUTING_MODES = (
 PROXY_METRICS = ("stable_rank", "snr", "snr_ema", "alignment")
 COMPUTE_MODES = ("reference", "svd", "ns")
 NS_VARIANTS = ("quintic", "cubic")
+SPECTRUM_MODES = ("power", "relmuon", "relmuon_log1p", "random_uniform", "random", "inverted")
 MAGNITUDE_MODES = ("none", "polar_fro")
-SPECTRUM_MODES = ("power", "random", "inverted")
 
 # Tuned quintic Newton-Schulz coefficients (reference DynMuon / Dion repo).
 # Each row (a, b, c) applies X <- a X + b (X Xᵀ) X + c (X Xᵀ)² X.
@@ -444,7 +444,8 @@ class DynMuonRoute(torch.optim.Optimizer):
         nesterov: bool = True,
         weight_decay: float = 0.0,
         routing_mode: str = "stable_rank",
-        compute_mode: str = "reference",
+        spectrum_mode: str = "power",
+        compute_mode: str = "ns",
         ns_variant: str = "quintic",
         ns_steps: int = 5,
         eps: float = 1e-8,
@@ -470,8 +471,16 @@ class DynMuonRoute(torch.optim.Optimizer):
         track_proxies: bool = True,
         snr_ema_decay: float = 0.95,
     ):
+        # Resolve spectrum and spectrum_mode:
+        if spectrum_mode == "power" and spectrum != "power":
+            spectrum_mode = spectrum
+        if spectrum_mode == "random":
+            spectrum_mode = "random_uniform"
+
         if routing_mode not in ROUTING_MODES:
             raise ValueError(f"routing_mode must be one of {ROUTING_MODES}, got {routing_mode}")
+        if spectrum_mode not in SPECTRUM_MODES:
+            raise ValueError(f"spectrum_mode must be one of {SPECTRUM_MODES}, got {spectrum_mode}")
         if compute_mode not in COMPUTE_MODES:
             raise ValueError(f"compute_mode must be one of {COMPUTE_MODES}, got {compute_mode}")
         if ns_variant not in NS_VARIANTS:
@@ -480,9 +489,9 @@ class DynMuonRoute(torch.optim.Optimizer):
             raise ValueError(f"magnitude must be one of {MAGNITUDE_MODES}, got {magnitude}")
         if spectrum not in SPECTRUM_MODES:
             raise ValueError(f"spectrum must be one of {SPECTRUM_MODES}, got {spectrum}")
-        if spectrum != "power" and compute_mode != "svd":
+        if spectrum_mode != "power" and compute_mode == "reference":
             raise ValueError(
-                f"spectrum={spectrum!r} requires compute_mode='svd' (got {compute_mode!r})"
+                f"spectrum_mode={spectrum_mode!r} is not supported with compute_mode='reference'"
             )
         if modulate_metric not in PROXY_METRICS:
             raise ValueError(f"modulate_metric must be one of {PROXY_METRICS}, got {modulate_metric}")
@@ -501,9 +510,9 @@ class DynMuonRoute(torch.optim.Optimizer):
             raise ValueError(f"lean_max must be positive or None, got {lean_max}")
         defaults = dict(
             lr=lr, momentum=momentum, nesterov=nesterov, weight_decay=weight_decay,
-            routing_mode=routing_mode, compute_mode=compute_mode, ns_variant=ns_variant,
-            ns_steps=ns_steps, eps=eps, adjust_lr_fn=adjust_lr_fn, p_min=p_min,
-            p_max=p_max, mu=mu, omega=omega, ref=ref, beta=beta,
+            routing_mode=routing_mode, spectrum_mode=spectrum_mode, compute_mode=compute_mode,
+            ns_variant=ns_variant, ns_steps=ns_steps, eps=eps, adjust_lr_fn=adjust_lr_fn,
+            p_min=p_min, p_max=p_max, mu=mu, omega=omega, ref=ref, beta=beta,
             dynamic_ref=dynamic_ref, ref_decay=ref_decay,
             lean_norm=lean_norm, lean_max=lean_max,
             modulate_metric=modulate_metric, fixed_p=fixed_p, tau_ratio=tau_ratio,
@@ -663,6 +672,7 @@ class DynMuonRoute(torch.optim.Optimizer):
         G = param.grad
         orig_shape = G.shape
         G2 = G.reshape(G.shape[0], -1) if G.dim() != 2 else G
+        W2 = param.reshape(param.shape[0], -1) if param.dim() != 2 else param
         fan_out, fan_in = G2.shape
 
         state = self.state[param]
@@ -699,34 +709,47 @@ class DynMuonRoute(torch.optim.Optimizer):
                          last_gamma=float("nan"), last_gamma_ema=float(gamma_ema),
                          last_alpha=float("nan"))
             return None
-        if fro_M > 0.0:
-            if track or metric == "stable_rank":
-                Xn = M2.to(torch.float32) / fro_M
-                A = Xn @ Xn.mT if Xn.size(-2) <= Xn.size(-1) else Xn.mT @ Xn
-                lam_max = float(_eigvalsh(A)[-1].clamp(min=0.0))
-                sr = 1.0 / (lam_max + eps)        # ‖M‖_F²/σ_max² ∈ [1, min(m,n)]
-            if track or metric == "snr":
-                gamma = fro_M / (float(torch.linalg.norm((G2 - M2).to(torch.float32))) + eps)
-            if track or metric == "alignment":
-                W2 = param.reshape(param.shape[0], -1) if param.dim() != 2 else param
-                num = float(torch.sum(W2.to(torch.float32) * M2.to(torch.float32)).abs())
-                alpha = num / (float(torch.linalg.norm(W2.to(torch.float32))) * fro_M + eps)
+        spectrum_mode = group["spectrum_mode"]
+        use_svd = (group["compute_mode"] == "svd") or (spectrum_mode != "power")
+
+        if use_svd:
+            U, S, Vh = _svd(M2)
+            lam_max = float(((S[0] / fro_M) ** 2).item())
+        else:
+            Xn = M2.to(torch.float32) / fro_M
+            A = Xn @ Xn.mT if Xn.size(-2) <= Xn.size(-1) else Xn.mT @ Xn
+            lam_max = float(_eigvalsh(A)[-1].clamp(min=0.0))
+
+        if track or metric == "stable_rank":
+            sr = 1.0 / (lam_max + eps)
+        if track or metric == "snr":
+            gamma = fro_M / (float(torch.linalg.norm((G2 - M2).to(torch.float32))) + eps)
+        if track or metric == "alignment":
+            num = float(torch.sum(W2.to(torch.float32) * M2.to(torch.float32)).abs())
+            alpha = num / (float(torch.linalg.norm(W2.to(torch.float32))) * fro_M + eps)
+
         proxies = {"stable_rank": sr, "snr": gamma, "snr_ema": gamma_ema, "alignment": alpha}
         x = proxies.get(metric) if metric is not None else None
-
         p_exp = self._select_p(group, x)
 
-        # -- shaped update D --------------------------------------------------
+        # -- shape update D ---------------------------------------------------
         if group["compute_mode"] == "reference":
-            # Reference DynMuon: bfloat16 transform input and bfloat16 update
-            # (the reference casts the momentum to bf16 before the transform).
             D = dynmuon_spectral_transform(M2.to(torch.bfloat16), p_exp, epsilon=eps)
-        elif group["compute_mode"] == "svd":
-            D = shape_exact_svd(M2, p_exp, spectrum=group["spectrum"],
-                                generator=self._spectrum_generator)
-        else:  # "ns"
-            D = shape_exact_ns(M2, p_exp, ns_variant=group["ns_variant"],
-                               ns_steps=group["ns_steps"])
+        elif spectrum_mode in ("power", "inverted", "random", "random_uniform"):
+            spec_arg = "random" if spectrum_mode == "random_uniform" else spectrum_mode
+            D = shape_exact_svd(M2, p_exp, spectrum=spec_arg, generator=self._spectrum_generator)
+        elif spectrum_mode in ("relmuon", "relmuon_log1p"):
+            # U, S, Vh are already computed from M2 above since use_svd is True
+            _, S_w, _ = _svd(W2)
+            r = min(S.numel(), S_w.numel())
+            if spectrum_mode == "relmuon":
+                S_hat = S_w[:r]
+            else:  # relmuon_log1p
+                S_hat = torch.log1p(S_w[:r].clamp(min=0.0))
+            S_hat = (S_hat + eps) / (torch.sqrt(torch.mean(S_hat.square())) + eps)
+            D = (U[:, :r] * S_hat.to(dtype=U.dtype, device=U.device)) @ Vh[:r, :]
+        else:  # compute_mode == "ns" and spectrum_mode == "power"
+            D = shape_exact_ns(M2, p_exp, ns_variant=group["ns_variant"], ns_steps=group["ns_steps"])
 
         if group["magnitude"] == "polar_fro":
             # Decouple magnitude from shape: every update carries the Frobenius

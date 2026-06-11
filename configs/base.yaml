@@ -19,13 +19,8 @@ n_head: 6
 matrix_optimizer: dynmuon       # dynmuon | muon | gated_muon | relmuon | adamw
 routing_mode: schedule_modulated  # fixed | global_schedule | schedule_modulated | stable_rank | snr | snr_ema | alignment
 fixed_p: 0.0               # used when routing_mode=fixed (0.0 = Muon, 1.0 = SGD)
-# compute_mode:
-#   reference — the released DynMuon transform, bit-matched (3-phase switch:
-#               p>=0.25 raw momentum; 0<=p<0.25 Newton-Schulz polar; p<0
-#               fast_spectral Taylor-2 with the ||M||^p back-scale). Default.
-#   svd       — exact continuous U Σ^p Vᵀ on the raw spectrum (float32).
-#   ns        — continuous U Σ^p Vᵀ via Gram eigendecomposition + NS polar.
-compute_mode: reference
+spectrum_mode: power       # power | relmuon | random_uniform | inverted
+compute_mode: reference    # reference (released DynMuon) | svd (exact) | ns (continuous Gram+NS polar)
 ns_variant: quintic        # quintic (reference coefficients) | cubic (textbook); ns mode only
 ns_steps: 5                # cubic iteration count; ns mode only
 dynmuon_eps: 1.0e-8        # reference optimizer epsilon (fast_spectral keeps its internal 1e-7)

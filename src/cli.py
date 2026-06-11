@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .config import load_config
 from .trainer import train
@@ -56,9 +57,22 @@ def main() -> None:
     ap.add_argument("--compile", dest="compile",
                     action=argparse.BooleanOptionalAction)
     ap.add_argument("--wandb", action="store_true", default=None)
-    args = ap.parse_args()
+
+    processed_args = []
+    for arg in sys.argv[1:]:
+        if arg.startswith("--"):
+            if "=" in arg:
+                flag, val = arg.split("=", 1)
+                processed_args.append(f"{flag.replace('_', '-') }={val}")
+            else:
+                processed_args.append(arg.replace("_", "-"))
+        else:
+            processed_args.append(arg)
+
+    args = ap.parse_args(processed_args)
     overrides = {k: v for k, v in vars(args).items() if k != "config"}
     train(load_config(args.config, overrides))
+
 
 
 if __name__ == "__main__":

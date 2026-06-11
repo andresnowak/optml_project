@@ -155,6 +155,7 @@ def build_optimizers(model: nn.Module, cfg: dict):
         nesterov=cfg.get("nesterov", True),
         weight_decay=cfg.get("weight_decay", 0.0),
         routing_mode=routing_mode,
+        spectrum_mode=cfg.get("spectrum_mode", "power"),
         compute_mode=cfg.get("compute_mode", "reference"),
         ns_variant=cfg.get("ns_variant", "quintic"),
         ns_steps=cfg.get("ns_steps", 5),
