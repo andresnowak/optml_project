@@ -128,11 +128,43 @@ seeds)
     best="${1:?usage: $0 seeds <best_dynmuon_muon_lr>}"
     t="$(lr_tag "${best}")"
     for seed in 1 2; do
+        submit seed_replicates "seed${seed}_muon_${t}" configs/muon.yaml \
+            --muon-lr "${best}" --seed "${seed}"
         submit seed_replicates "seed${seed}_dynmuon_${t}" configs/dynmuon.yaml \
             --muon-lr "${best}" --seed "${seed}"
         submit seed_replicates "seed${seed}_route_${t}" configs/route.yaml \
             --muon-lr "${best}" --seed "${seed}"
     done
+    ;;
+
+relmuon-bowls)
+    # RelMuon LR bowls on the CURRENT code (the 06-10 RelMuon sweep ran the
+    # old-init era and is not comparable with the 06-11 bowls).
+    for lr in 0.02 0.1 0.3 0.5; do
+        submit bowl_relmuon "bowl_relmuon_log1p_mlr$(lr_tag ${lr})" configs/relmuon_log1p.yaml \
+            --muon-lr "${lr}"
+    done
+    for lr in 0.1 0.5; do
+        submit bowl_relmuon "bowl_relmuon_rms_mlr$(lr_tag ${lr})" configs/relmuon_rms.yaml \
+            --muon-lr "${lr}"
+    done
+    ;;
+
+kaon)
+    best="${1:?usage: $0 kaon <muon_lr>}"
+    t="$(lr_tag "${best}")"
+    submit spectrum_controls "ctrl_kaon_${t}" configs/kaon.yaml --muon-lr "${best}"
+    ;;
+
+final)
+    # Everything still needed for the report, in one shot (~21 jobs).
+    # Usage: scripts/sweeps.sh final 0.02
+    best="${1:?usage: $0 final <best_muon_lr>}"
+    "$0" bowls-left
+    "$0" seeds "${best}"
+    "$0" controls "${best}"
+    "$0" kaon "${best}"
+    "$0" relmuon-bowls
     ;;
 
 *)

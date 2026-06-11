@@ -204,6 +204,18 @@ the YAML for ad-hoc runs.
 `batch_size` and `mbs` are both sequence counts. The actual token budget per
 optimizer step is `batch_size * sequence_length`.
 
+## Reproducing the report
+
+`python run.py` reproduces every figure and table in `report/main.tex`: it
+pulls all sweep histories from W&B (`experiments/pull_wandb.py`) into
+`results/wandb/` and regenerates the plots (`experiments/report_figures.py`)
+into `report/figures/` — LR bowls, loss curves, depth-resolved routing, the
+beta sweep, the proxy comparison, the empirical SVD≡Newton-Schulz check, and
+the step-time/steps-to-target cost comparison. `--skip-pull` reuses local
+dumps. The training runs themselves are submitted with
+`scripts/sweeps.sh bowls`, `scripts/sweeps.sh route 0.02`, and
+`scripts/sweeps.sh final 0.02` (see `notes/timeline.md`).
+
 ## Quickstart
 
 ```bash
