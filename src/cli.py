@@ -39,6 +39,7 @@ def main() -> None:
     ap.add_argument("--kaon-steps", dest="kaon_steps", type=int)
     ap.add_argument("--kaon-lambda", dest="kaon_lambda", type=float)
     ap.add_argument("--kaon-output-scale", dest="kaon_output_scale", type=float)
+    ap.add_argument("--gate-tau", dest="gate_tau", type=float)
     ap.add_argument("--noise-lambda", dest="noise_lambda", type=float)
     ap.add_argument("--beta", type=float)
     ap.add_argument("--lean-norm", dest="lean_norm", choices=["raw", "zscore"])
@@ -53,11 +54,6 @@ def main() -> None:
     ap.add_argument("--wandb-entity", dest="wandb_entity")
     ap.add_argument("--device")
     ap.add_argument("--compile", dest="compile",
-                    action=argparse.BooleanOptionalAction)
-    ap.add_argument("--input-muon-rank", dest="input_muon_rank", type=int)
-    ap.add_argument("--input-muon-update-every", dest="input_muon_update_every", type=int)
-    ap.add_argument("--input-muon-basis-max-tokens", dest="input_muon_basis_max_tokens", type=int)
-    ap.add_argument("--input-muon-center", dest="input_muon_center",
                     action=argparse.BooleanOptionalAction)
     ap.add_argument("--wandb", action="store_true", default=None)
     args = ap.parse_args()

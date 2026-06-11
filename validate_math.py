@@ -27,9 +27,8 @@ from src.optimizers.dynmuon import (
     quintic_newton_schulz,
     shape_exact_svd,
 )
-from src.optimizers.input_muon import input_basis_from_activations, input_muon_update
+from src.optimizers.gated_muon import gated_zeropower_via_newtonschulz5
 from src.optimizers.kaon import kaon_chaos_map, kaon_update
-from src.optimizers.muon import muon_update
 from src.optimizers.relmuon import (
     relmuon_aligned_scales,
     relmuon_update,
@@ -127,38 +126,15 @@ def test_quintic_newton_schulz_approximates_polar(shape):
     assert rel < 0.1, f"quintic NS too far from polar: {rel}"
 
 
-def test_input_muon_full_basis_matches_muon():
-    """With Q = I, InputMuon should reduce to standard Muon."""
-    G = torch.randn(6, 10)
-    Q = torch.eye(G.size(1))
-    momentum_muon = torch.zeros_like(G)
-    momentum_input = torch.zeros_like(G)
+def test_gated_muon_suppresses_tiny_singular_direction():
+    """Near-null directions should not become full-strength Muon directions."""
+    G = torch.diag(torch.tensor([1.0, 1e-7, 0.0], dtype=torch.float32))
 
-    ref = muon_update(G, momentum_muon, mu=0.0, nesterov=False, ns_steps=12)
-    got = input_muon_update(G, momentum_input, Q, mu=0.0, nesterov=False, ns_steps=12)
+    update = gated_zeropower_via_newtonschulz5(G, gate_tau=1e-5, ns_steps=5)
+    s = torch.linalg.svdvals(update.float())
 
-    assert torch.allclose(got.float(), ref.float(), atol=5e-3, rtol=5e-3)
-
-
-def test_input_muon_update_stays_in_input_subspace():
-    """The lifted update should have no right-space component outside span(Q)."""
-    G = torch.randn(7, 11)
-    Q, _ = torch.linalg.qr(torch.randn(G.size(1), 3), mode="reduced")
-    momentum = torch.zeros_like(G)
-
-    update = input_muon_update(G, momentum, Q, mu=0.0, nesterov=False, ns_steps=12)
-    projector_complement = torch.eye(G.size(1)) - Q @ Q.mT
-
-    assert torch.linalg.norm(update @ projector_complement) <= 1e-5
-
-
-def test_input_basis_from_activations_returns_orthonormal_columns():
-    """Activation SVD helper should return a valid right input basis."""
-    X = torch.randn(4, 5, 9)
-    Q = input_basis_from_activations(X, rank=4)
-
-    assert Q.shape == (9, 4)
-    assert torch.allclose(Q.mT @ Q, torch.eye(4), atol=1e-5, rtol=1e-5)
+    assert s[0] > 0.5
+    assert s[1] < 1e-5
 
 
 def test_stable_rank_identity():

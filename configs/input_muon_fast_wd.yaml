@@ -1,4 +1,0 @@
-# InputMuon fast ablation with matrix weight decay.
-extends: input_muon_fast.yaml
-run_name: input_muon_fast_wd
-weight_decay: 0.1

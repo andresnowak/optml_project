@@ -1,0 +1,9 @@
+# GatedMuon without matrix weight decay.
+extends: gpt124m.yaml
+matrix_optimizer: gated_muon
+ns_steps: 5
+gate_tau: 1.0e-5
+weight_decay: 0.0
+run_name: gated_muon_tau1e-5_no_wd
+
+adjust_lr_fn: spectral_norm

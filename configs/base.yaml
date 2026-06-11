@@ -16,7 +16,7 @@ n_layer: 12
 n_head: 6
 
 # method
-matrix_optimizer: dynmuon       # dynmuon | muon | relmuon | adamw
+matrix_optimizer: dynmuon       # dynmuon | muon | gated_muon | relmuon | adamw
 routing_mode: schedule_modulated  # fixed | global_schedule | schedule_modulated | stable_rank | snr | snr_ema | alignment
 fixed_p: 0.0               # used when routing_mode=fixed (0.0 = Muon, 1.0 = SGD)
 # compute_mode:
@@ -56,10 +56,7 @@ embed_lr: 6.0e-3          # tied embedding/head LR (it carries the logit scale;
                           # 6e-4 left embeddings near their init all run long)
 weight_decay: 0.1         # decoupled; applies to ALL matrix optimizers (incl. dynmuon)
 scalar_weight_decay: 0.0  # embeddings / biases / norm gains
-input_muon_rank: 64       # top input-subspace directions per matrix layer
-input_muon_update_every: 1
-input_muon_basis_max_tokens: 4096
-input_muon_center: false
+gate_tau: 1.0e-5          # GatedMuon small-singular-value threshold
 
 # schedule
 warmup_steps: 150
