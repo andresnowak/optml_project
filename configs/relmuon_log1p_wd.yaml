@@ -1,0 +1,4 @@
+# RelMuon-log1p with matrix weight decay enabled.
+extends: relmuon_log1p.yaml
+run_name: relmuon_log1p_wd
+weight_decay: 0.1
