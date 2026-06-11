@@ -125,10 +125,11 @@ def build_optimizers(model: nn.Module, cfg: dict):
         adamw = torch.optim.AdamW(aux_groups, betas=(0.9, 0.95)) if aux_groups else None
         return relmuon, adamw
 
-    routed = cfg.get("routing_mode") == "schedule_modulated"
-    split = split_gpt_params(model, routed=routed)
     routing_mode = cfg["routing_mode"]
     route_mode = cfg.get("route", {}).get(routing_mode, {})
+    beta = cfg.get("beta", route_mode.get("beta", 0.1))
+    routed = routing_mode == "schedule_modulated" and float(beta) != 0.0
+    split = split_gpt_params(model, routed=routed)
     default_lt = route_mode.get("default", {})
 
     def _lt(lt: str, key: str, dflt: float) -> float:
@@ -159,7 +160,7 @@ def build_optimizers(model: nn.Module, cfg: dict):
         ns_steps=cfg.get("ns_steps", 5),
         eps=cfg.get("dynmuon_eps", 1e-8),
         adjust_lr_fn=cfg.get("adjust_lr_fn", "spectral_norm"),
-        beta=cfg.get("beta", route_mode.get("beta", 0.1)),
+        beta=beta,
         dynamic_ref=cfg.get("dynamic_ref", route_mode.get("dynamic_ref", False)),
         ref_decay=cfg.get("ref_decay", route_mode.get("ref_decay", 0.9)),
         lean_norm=cfg.get("lean_norm", route_mode.get("lean_norm", "raw")),

@@ -65,7 +65,6 @@ prep)
 
 bowls)
     # Phase 1 — LR bowls (one epoch max; see DATA BUDGET above).
-    # dynmuon: previous sweep's best was at the 0.2 edge -> extend to 0.4/0.8.
     for lr in 0.02 0.05 0.1 0.2 0.4 0.8; do
         submit bowl_dynmuon "bowl_dynmuon_mlr$(lr_tag ${lr})" configs/dynmuon.yaml \
             --muon-lr "${lr}"
@@ -78,6 +77,20 @@ bowls)
     for lr in 0.0003 0.0006 0.0012 0.0024; do
         submit bowl_adamw "bowl_adamw_alr$(lr_tag ${lr})" configs/adamw.yaml \
             --adam-lr "${lr}"
+    done
+    ;;
+
+bowls-left)
+    # Phase 1b — close the bowls on the LEFT. The 2026-06-11 sweep (fixed
+    # init/embed LR) bottoms out at the 0.02 edge for both muon (3.6465) and
+    # dynmuon (3.6502); the old upward trend was an artifact of the broken
+    # embedding setup. Submits only the missing points (run names must not
+    # collide with finished checkpoints).
+    for lr in 0.005 0.01; do
+        submit bowl_dynmuon "bowl_dynmuon_mlr$(lr_tag ${lr})" configs/dynmuon.yaml \
+            --muon-lr "${lr}"
+        submit bowl_muon "bowl_muon_mlr$(lr_tag ${lr})" configs/muon.yaml \
+            --muon-lr "${lr}"
     done
     ;;
 
@@ -115,11 +128,61 @@ seeds)
     best="${1:?usage: $0 seeds <best_dynmuon_muon_lr>}"
     t="$(lr_tag "${best}")"
     for seed in 1 2; do
+        submit seed_replicates "seed${seed}_muon_${t}" configs/muon.yaml \
+            --muon-lr "${best}" --seed "${seed}"
         submit seed_replicates "seed${seed}_dynmuon_${t}" configs/dynmuon.yaml \
             --muon-lr "${best}" --seed "${seed}"
         submit seed_replicates "seed${seed}_route_${t}" configs/route.yaml \
             --muon-lr "${best}" --seed "${seed}"
     done
+    ;;
+
+relmuon-bowls)
+    # RelMuon LR bowls on the CURRENT code (the 06-10 RelMuon sweep ran the
+    # old-init era and is not comparable with the 06-11 bowls).
+    for lr in 0.02 0.1 0.3 0.5; do
+        submit bowl_relmuon "bowl_relmuon_log1p_mlr$(lr_tag ${lr})" configs/relmuon_log1p.yaml \
+            --muon-lr "${lr}"
+    done
+    for lr in 0.1 0.5; do
+        submit bowl_relmuon "bowl_relmuon_rms_mlr$(lr_tag ${lr})" configs/relmuon_rms.yaml \
+            --muon-lr "${lr}"
+    done
+    ;;
+
+kaon)
+    best="${1:?usage: $0 kaon <muon_lr>}"
+    t="$(lr_tag "${best}")"
+    submit spectrum_controls "ctrl_kaon_${t}" configs/kaon.yaml --muon-lr "${best}"
+    ;;
+
+proxies)
+    # Ablation over "unbalancedness" proxies at fixed beta magnitude and LR.
+    # stable_rank and alignment arms are covered by the route_fill /
+    # route_alignment groups (same beta/LR); this adds the SNR proxies.
+    # Orientation: the framework routes noisy (low gamma) -> raw momentum,
+    # i.e. p decreases with gamma, hence beta = -0.15 is the principled sign;
+    # the +0.15 arm is the orientation sanity check.
+    best="${1:?usage: $0 proxies <muon_lr>}"
+    t="$(lr_tag "${best}")"
+    submit route_proxies "proxy_snr_negbeta_${t}" configs/route.yaml \
+        --muon-lr "${best}" --modulate-metric snr --beta -0.15
+    submit route_proxies "proxy_snr_posbeta_${t}" configs/route.yaml \
+        --muon-lr "${best}" --modulate-metric snr --beta 0.15
+    submit route_proxies "proxy_snr_ema_negbeta_${t}" configs/route.yaml \
+        --muon-lr "${best}" --modulate-metric snr_ema --beta -0.15
+    ;;
+
+final)
+    # Everything still needed for the report, in one shot (~24 jobs).
+    # Usage: scripts/sweeps.sh final 0.02
+    best="${1:?usage: $0 final <best_muon_lr>}"
+    "$0" bowls-left
+    "$0" seeds "${best}"
+    "$0" controls "${best}"
+    "$0" kaon "${best}"
+    "$0" relmuon-bowls
+    "$0" proxies "${best}"
     ;;
 
 *)
