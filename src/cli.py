@@ -32,9 +32,12 @@ def main() -> None:
     ap.add_argument("--val-loss-every", dest="val_loss_every", type=int)
     ap.add_argument("--warmup-steps", dest="warmup_steps", type=int)
     ap.add_argument("--min-lr-ratio", dest="min_lr_ratio", type=float)
+    ap.add_argument("--log-every", dest="log_every", type=int)
     ap.add_argument("--muon-lr", dest="muon_lr", type=float)
     ap.add_argument("--adam-lr", dest="adam_lr", type=float)
     ap.add_argument("--weight-decay", dest="weight_decay", type=float)
+    ap.add_argument("--adjust-lr-fn", dest="adjust_lr_fn",
+                    choices=["none", "spectral_norm", "rms_norm", "keller_jordan"])
     ap.add_argument("--relmuon-scale-mode", dest="relmuon_scale_mode",
                     choices=["log1p", "rms", "complete", "log1p_aligned"])
     ap.add_argument("--relmuon-scale-cap", dest="relmuon_scale_cap", type=float)

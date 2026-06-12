@@ -215,6 +215,10 @@ def test_optimizer_ns_matches_svd(ns_variant, tol):
     d_svd, d_ns = run("svd"), run("ns")
     rel = torch.linalg.norm(d_ns - d_svd) / torch.linalg.norm(d_svd)
     assert rel < tol, f"ns({ns_variant}) vs svd relative error too large: {rel}"
+    # Regression guard: exactly-zero error means the ns path silently
+    # dispatched to the svd path (the two iterations can never be bitwise
+    # equal to an exact SVD).
+    assert rel > 0, "ns mode produced bitwise-identical output to svd mode"
 
 
 @pytest.mark.parametrize("fixed_p,name", [(0.0, "muon"), (1.0, "sgd")])

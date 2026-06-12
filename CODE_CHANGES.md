@@ -163,3 +163,100 @@ Result observed: `85 passed`.
   RelMuon-log1p sweep over the same LR grid, W&B project, and train budget.
 - Why: this is the clean cluster command for comparing full RelMuon against
   attention-only RelMuon.
+
+## 2026-06-11 - Reproducibility wording and numerical diagnostics
+
+- File: `report/main.tex`
+- Change: kept the reproducibility section but rewrote it at the experiment
+  provenance level instead of referencing concrete commands or code snippets.
+- Why: the report should describe reproducibility guarantees without reading
+  like an execution manual.
+
+- File: `experiments/report_figures.py`
+- Change: replaced the numerical-check appendix plot with a three-panel
+  diagnostic covering exponent-induced magnitude changes, SVD versus
+  Gram/Newton-Schulz agreement, and the DynMuon phase schedule.
+- Why: the previous numerical-check graphs were hard to interpret; the new
+  figure directly exposes the main mathematical and implementation concerns.
+
+- File: `report/main.tex`
+- Change: updated the numerical-check caption to describe the new diagnostic
+  panels.
+- Why: the appendix figure now supports the interpretation of Route and
+  DynMuon rather than only documenting low-level validation.
+
+## 2026-06-11 - Report clarity and project-default cleanup
+
+- File: `report/main.tex`
+- Change: lightened literature references, replaced speculative unfinished
+  discussion with `[TODO]` placeholders, added routing-metric coverage, added
+  table caption spacing, and restored formal appendix lemmas with main-text
+  references.
+- Why: the report now distinguishes completed evidence from pending results
+  and keeps claims closer to directly supported literature or experiment data.
+
+- Files: `configs/base.yaml`, `src/trainer.py`, `experiments/lr_bowl.py`,
+  `docs/research_guide.md`, `docs/project_guide.md`
+- Change: changed remaining W&B defaults/examples from `dynmuon-route` to
+  `dynmuon-route-sweeps`.
+- Why: `dynmuon-route` contains runs from a different source and should not be
+  mixed with this project's experiment artifacts.
+
+## 2026-06-11 - Literature audit and figure polish
+
+- Files: `report/main.tex`, `report/literature.bib`
+- Change: checked active citations against online arXiv/OpenReview/NeurIPS
+  metadata, updated BibTeX fields to match the canonical records where
+  available, added `\clearpage` before the appendix, and expanded the appendix
+  proxy definitions.
+- Why: the report should only cite papers for claims they directly support,
+  and the appendix needs to explain the routing metrics used in experiments.
+
+- File: `experiments/report_figures.py`
+- Change: capitalized and clarified plot labels, converted raw layer suffixes
+  into readable legend labels, filtered route/proxy helper plots to comparable
+  full-length runs, and simplified the numerical-check figure.
+- Why: the figures should read as report figures rather than debugging plots,
+  and the numerical diagnostic should emphasize the main intuition instead of
+  cramming several checks into small panels.
+
+## 2026-06-11 - Figure reset and routing/loss visualization cleanup
+
+- File: `report/figures/`
+- Change: removed all generated figure images and regenerated the report figure
+  set from the current plotting script.
+- Why: avoids stale plot artifacts after changing figure names and layouts.
+
+- Files: `experiments/report_figures.py`, `report/main.tex`
+- Change: merged the separate train/validation loss figures into one two-panel
+  figure, converted the routed-depth plot from overlapping lines to a heatmap,
+  and reduced the appendix numerical diagnostic width.
+- Why: the loss comparison is easier to read side-by-side, the depth heatmap
+  gives a clearer explanation of which matrix types receive positive or
+  negative routed offsets, and appendix figures should not dominate the text.
+
+- Files: `experiments/report_figures.py`, `report/main.tex`
+- Change: replaced the routed-depth heatmap with routed exponent trajectories
+  over training, averaged by matrix type, with the global DynMuon clock shown
+  as a dashed reference line.
+- Why: plotting $p_{t,\ell}$ directly shows how routing evolves over time and
+  which matrix types persistently stay above or below the shared schedule.
+
+- Files: `experiments/report_figures.py`, `report/main.tex`
+- Change: stacked the train/validation loss panels vertically in one
+  two-column figure and restored the routed-depth heatmap.
+- Why: the stacked loss layout keeps the two curves in one visual comparison
+  without a wide, low-aspect layout, and the heatmap gives the clearer routing
+  summary preferred for the report.
+
+- Files: `experiments/report_figures.py`, `report/main.tex`
+- Change: moved the stacked train/validation loss figure to one column and
+  removed the explanatory red/blue sentence from inside the routed-depth plot.
+- Why: the loss plot should not consume a full two-column float, and the
+  routed-depth explanation belongs in the LaTeX caption rather than inside the
+  image.
+
+- File: `experiments/report_figures.py`
+- Change: moved the loss-figure legend outside the plotting axes and reduced
+  its font/spacing.
+- Why: the legend no longer covers the loss curves or competes with the data.

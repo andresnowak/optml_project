@@ -11,7 +11,7 @@ Pipeline (all steps are idempotent):
   2. Regenerate the report figures into report/figures/
      (experiments/report_figures.py): LR bowls, loss curves, depth-resolved
      routing, beta sweep, proxy comparison, SVD-vs-Newton-Schulz evidence,
-     and the cost comparison.
+     exponent/magnitude diagnostics, and the cost comparison.
   3. Print the summary tables used in the report.
 
 Training itself runs on the cluster via scripts/sweeps.sh (see README); the
@@ -35,13 +35,14 @@ REPORT_GROUPS = (
     "bowl_dynmuon", "bowl_muon", "bowl_adamw", "bowl_relmuon",
     "route_arms", "route_lrfix*", "route_lrgrid*", "route_fill*",
     "route_alignment*", "route_proxies", "spectrum_controls", "seed_replicates",
+    "relmuon_compare",
 )
 # Loss-curve panel: best-LR baselines vs the routed variants.
 CURVE_RUNS = ("bowl_muon_mlr0p02,bowl_dynmuon_mlr0p02,"
               "route_lrfix_beta0_mlr0p02_20260611_lrfix,"
               "route_lrfix_decoupled_ref_mlr0p02_20260611_lrfix")
 CURVE_LABELS = "Muon,DynMuon,Route (beta=0),Route decoupled"
-DEPTH_RUN = "route_fill_beta0p15_mlr0p02_20260611_routefill"
+DEPTH_RUN = "route_0p2"
 
 
 def sh(*cmd: str, check: bool = True) -> int:
@@ -58,11 +59,16 @@ def step_figures() -> None:
     fig = lambda *a: sh(PY, "experiments/report_figures.py", *a, check=False)
     fig("bowls")
     fig("svd_ns")
+    fig("equivalence")
     fig("cost")
     fig("curves", "--runs", CURVE_RUNS, "--labels", CURVE_LABELS)
+    fig("losses")
     fig("depth", "--run", DEPTH_RUN)
     fig("beta", "--lr", "0p02")
     fig("proxies")
+    fig("route_ablation")
+    fig("relmuon_attention")
+    fig("spectrum_controls")
 
 
 def step_tables() -> None:

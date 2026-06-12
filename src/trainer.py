@@ -36,7 +36,7 @@ class WandbLogger:
         self._wandb = wandb
         settings = wandb.Settings(init_timeout=cfg.get("wandb_init_timeout", 180))
         self._run = wandb.init(
-            project=cfg.get("wandb_project", "dynmuon-route"),
+            project=cfg.get("wandb_project", "dynmuon-route-sweeps"),
             entity=cfg.get("wandb_entity"),
             name=cfg.get("run_name"),
             group=cfg.get("wandb_group"),
@@ -497,6 +497,9 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
     min_lr_ratio = cfg.get("min_lr_ratio", 0.1)
     clip = cfg.get("grad_clip", 1.0)
     base_muon, base_adam = cfg["muon_lr"], cfg["adam_lr"]
+    timing_forward_backward = 0.0
+    timing_optimizer = 0.0
+    timing_steps = 0
 
     model.train()
     t0 = time.perf_counter()
@@ -545,6 +548,7 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
                 g["lr"] = g.get("initial_lr", base_adam) * f
             adamw.zero_grad(set_to_none=True)
 
+        step_compute_t0 = time.perf_counter()
         x, y = get_token_batch(train_data, batch_tokens, cfg["sequence_length"], device)
         losses: list[float] = []
         for xb, yb in iter_microbatches(x, y, mbs):
@@ -561,12 +565,19 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
 
         if clip:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+        forward_backward_seconds = time.perf_counter() - step_compute_t0
+
         primary_optimizer = dynmuon if dynmuon is not None else adamw
         lr_used = primary_optimizer.param_groups[0]["lr"] if primary_optimizer is not None else 0.0
+        optimizer_t0 = time.perf_counter()
         if dynmuon is not None:
             dynmuon.step(noise_hook=noise_hook)
         if adamw is not None:
             adamw.step()
+        optimizer_seconds = time.perf_counter() - optimizer_t0
+        timing_forward_backward += forward_backward_seconds
+        timing_optimizer += optimizer_seconds
+        timing_steps += 1
 
         completed_step = step + 1
 
@@ -574,11 +585,20 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
             train_loss = float(sum(losses))
             print(f"step {completed_step:5d}/{train_steps} | loss {train_loss:.4f} | lr {lr_used:.2e}")
             if logger is not None:
-                logger.log({
+                payload = {
                     "train/loss": train_loss,
                     "lr": lr_used,
                     "tokens/train": completed_step * batch_tokens,
-                }, step=completed_step)
+                }
+                if timing_steps:
+                    payload.update({
+                        "time/forward_backward_seconds_per_step": timing_forward_backward / timing_steps,
+                        "time/optimizer_seconds_per_step": timing_optimizer / timing_steps,
+                    })
+                logger.log(payload, step=completed_step)
+            timing_forward_backward = 0.0
+            timing_optimizer = 0.0
+            timing_steps = 0
             if cfg.get("log_weight_svd", False) and cfg.get("matrix_optimizer") in (
                 "muon", "gated_muon", "relmuon", "dynmuon", "kaon",
             ):

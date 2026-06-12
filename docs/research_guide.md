@@ -317,7 +317,7 @@ uv run python experiments/probe_proxies.py --config configs/small.yaml --steps 1
 ### LR bowls from W&B
 
 ```bash
-uv run python experiments/lr_bowl.py --group <group-name> --project dynmuon-route --entity cs-439-project
+uv run python experiments/lr_bowl.py --group <group-name> --project dynmuon-route-sweeps --entity cs-439-project
 ```
 
 ## 7. How to run on RunAI / RCP

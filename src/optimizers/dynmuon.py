@@ -735,9 +735,6 @@ class DynMuonRoute(torch.optim.Optimizer):
         # -- shape update D ---------------------------------------------------
         if group["compute_mode"] == "reference":
             D = dynmuon_spectral_transform(M2.to(torch.bfloat16), p_exp, epsilon=eps)
-        elif spectrum_mode in ("power", "inverted", "random", "random_uniform"):
-            spec_arg = "random" if spectrum_mode == "random_uniform" else spectrum_mode
-            D = shape_exact_svd(M2, p_exp, spectrum=spec_arg, generator=self._spectrum_generator)
         elif spectrum_mode in ("relmuon", "relmuon_log1p"):
             # U, S, Vh are already computed from M2 above since use_svd is True
             _, S_w, _ = _svd(W2)
@@ -748,6 +745,12 @@ class DynMuonRoute(torch.optim.Optimizer):
                 S_hat = torch.log1p(S_w[:r].clamp(min=0.0))
             S_hat = (S_hat + eps) / (torch.sqrt(torch.mean(S_hat.square())) + eps)
             D = (U[:, :r] * S_hat.to(dtype=U.dtype, device=U.device)) @ Vh[:r, :]
+        elif use_svd:
+            # compute_mode == "svd", or a non-power spectrum control that needs
+            # the explicit SVD (power must NOT land here in ns mode, or the
+            # Newton-Schulz path silently becomes the exact-SVD path).
+            spec_arg = "random" if spectrum_mode == "random_uniform" else spectrum_mode
+            D = shape_exact_svd(M2, p_exp, spectrum=spec_arg, generator=self._spectrum_generator)
         else:  # compute_mode == "ns" and spectrum_mode == "power"
             D = shape_exact_ns(M2, p_exp, ns_variant=group["ns_variant"], ns_steps=group["ns_steps"])
 

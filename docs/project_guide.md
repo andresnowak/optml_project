@@ -570,7 +570,7 @@ uv run python experiments/lr_bowl.py --group <group-name>
 Examples:
 
 ```bash
-uv run python experiments/lr_bowl.py --group route_lr_sweep --project dynmuon-route --entity cs-439-project
+uv run python experiments/lr_bowl.py --group route_lr_sweep --project dynmuon-route-sweeps --entity cs-439-project
 uv run python experiments/lr_bowl.py --group muon_lr_sweep --group route_lr_sweep --label muon --label route
 ```
 

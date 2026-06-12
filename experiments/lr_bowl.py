@@ -383,7 +383,7 @@ def main() -> None:
                     help="Series label for each group/project. Defaults to the group/project name.")
     ap.add_argument("--labels", nargs="+", default=[],
                     help="List of series labels matching --group/--sweep-projects order. Values may also be comma-separated.")
-    ap.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "dynmuon-route"))
+    ap.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "dynmuon-route-sweeps"))
     ap.add_argument("--entity", default=os.environ.get("WANDB_ENTITY", "cs-439-project"))
     ap.add_argument("--metrics", action="append", default=[],
                     help="Metrics to plot. Default: val/loss,train/loss.")

@@ -1,0 +1,9 @@
+# RelMuon-log1p with the two main Muon/DynMuon protocol choices restored:
+# matrix weight decay and spectral-norm shape LR scaling.
+#
+# Compare this against configs/relmuon_log1p.yaml and
+# configs/relmuon_log1p_wd.yaml at the same LRs to separate spectrum effects
+# from regularization / shape-scaling effects.
+extends: relmuon_log1p_wd.yaml
+run_name: relmuon_log1p_matched
+adjust_lr_fn: spectral_norm

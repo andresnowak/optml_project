@@ -69,7 +69,7 @@ val_loss_every: 125
 # logging / eval
 log_every: 10
 wandb: false
-wandb_project: dynmuon-route
+wandb_project: dynmuon-route-sweeps
 wandb_entity: cs-439-project   # W&B team; null -> use WANDB_ENTITY env / default
 
 # experiment 2 — anisotropic noise injection (0 disables)

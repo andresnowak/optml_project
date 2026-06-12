@@ -24,6 +24,7 @@ weight matrix is zero (e.g. zero-initialized projection layers).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from typing import Any
 
@@ -78,6 +79,16 @@ def relmuon_aligned_scales(weight: Tensor, Vh: Tensor, eps: float = 1e-8) -> Ten
     """
     action = torch.linalg.norm(weight.float() @ Vh.float().mT, dim=-2)  # (k,)
     return _normalize_log1p(action, eps)
+
+
+def _shape_lr_scale(fan_out: int, fan_in: int, adjust_lr_fn: str | None) -> float:
+    if adjust_lr_fn in (None, "none"):
+        return 1.0
+    if adjust_lr_fn == "spectral_norm":
+        return float(math.sqrt(fan_out / fan_in))
+    if adjust_lr_fn == "rms_norm":
+        return float(0.2 * math.sqrt(max(fan_out, fan_in)))
+    raise ValueError(f"unsupported RelMuon adjust_lr_fn: {adjust_lr_fn}")
 
 
 @torch.compile
@@ -138,8 +149,11 @@ class RelMuon(torch.optim.Optimizer):
         scale_mode: str = "log1p",
         scale_cap: float | None = None,
     ):
-        if adjust_lr_fn not in (None, "none"):
-            raise ValueError(f"RelMuon only supports adjust_lr_fn=None for now, got {adjust_lr_fn!r}")
+        if adjust_lr_fn not in (None, "none", "spectral_norm", "rms_norm"):
+            raise ValueError(
+                "RelMuon adjust_lr_fn must be None, 'none', 'spectral_norm', "
+                f"or 'rms_norm' (got {adjust_lr_fn!r})"
+            )
         _validate_scale_mode(scale_mode)
         if scale_cap is not None and scale_cap <= 0:
             raise ValueError(f"scale_cap must be positive, got {scale_cap}")
@@ -182,5 +196,6 @@ class RelMuon(torch.optim.Optimizer):
                 )
                 if group["weight_decay"]:
                     p.mul_(1.0 - group["lr"] * group["weight_decay"])
-                p.add_(update, alpha=-group["lr"])
+                lr_scale = _shape_lr_scale(p.grad.size(-2), p.grad.size(-1), group["adjust_lr_fn"])
+                p.add_(update, alpha=-group["lr"] * lr_scale)
         return loss

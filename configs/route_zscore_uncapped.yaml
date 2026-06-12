@@ -1,0 +1,6 @@
+# Router safeguard ablation: keep z-scoring but remove the practical lean cap.
+# Use together with route_raw_uncapped.yaml and route.yaml.
+extends: route.yaml
+run_name: dynmuon_route_zscore_uncapped
+lean_norm: zscore
+lean_max: 1000.0
