@@ -244,11 +244,11 @@ def test_fixed_mode_constant_exponent(fixed_p, name):
         assert torch.allclose(update, g, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.parametrize("p", [0.25, 0.5, 1.0])
+@pytest.mark.parametrize("p", [0.25, 0.5, 0.75, 1.0])
 def test_homogeneous_muon_fixed_power_spectrum(p):
-    """HomogeneousMuon applies the exact fixed SVD power map to its lookahead
-    matrix. With zero momentum and no Nesterov, the lookahead matrix is the
-    current gradient."""
+    """HomogeneousMuon applies the exact fixed SVD power map after Frobenius
+    normalization. With zero momentum and no Nesterov, the lookahead matrix is
+    the current gradient."""
     torch.manual_seed(23)
     g = torch.randn(7, 11)
     w = torch.zeros_like(g, requires_grad=True)
@@ -258,6 +258,13 @@ def test_homogeneous_muon_fixed_power_spectrum(p):
     got = -w.detach()
     expected = power_spectrum_via_svd(g, p=p)
     assert torch.allclose(got, expected, atol=1e-5, rtol=1e-5)
+    expected_singular_values = torch.linalg.svdvals(g.float() / torch.linalg.norm(g.float())).pow(p)
+    assert torch.allclose(
+        torch.linalg.svdvals(got.float()),
+        expected_singular_values,
+        atol=1e-5,
+        rtol=1e-5,
+    )
     assert opt.state[w]["last_p"] == p
 
 

@@ -52,7 +52,7 @@ embed_lr: 6.0e-3          # tied embedding/head LR (it carries the logit scale;
 weight_decay: 0.1         # decoupled; applies to ALL matrix optimizers (incl. dynmuon)
 scalar_weight_decay: 0.0  # embeddings / biases / norm gains
 gate_tau: 1.0e-5          # GatedMuon small-singular-value threshold
-homogeneous_p: 0.25       # HomogeneousMuon fixed spectral exponent
+homogeneous_p: 0.25       # HomogeneousMuon fixed exponent after Frobenius normalization
 
 # schedule
 warmup_steps: 150

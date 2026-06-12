@@ -1,15 +1,15 @@
 """HomogeneousMuon optimizer.
 
-This is a fixed-power spectral shaping variant:
+This is a Frobenius-normalized fixed-power spectral shaping variant:
 
-    M = U diag(sigma) V^T,    D = U diag(sigma^p) V^T.
+    X = M / ||M||_F = U diag(sigma) V^T,    D = U diag(sigma^p) V^T.
 
 It uses the same EMA-scaled Nesterov momentum convention, shape-aware learning
 rate scaling, and decoupled matrix weight decay as ``Muon`` in this repo. The
-    default ``p=0.25`` partially flattens the momentum spectrum. The supported
-    range is ``0 < p <= 1``: ``p=1`` is raw momentum, while smaller positive
-    values make the spectrum more homogeneous without using the singular
-    p=0 polar endpoint.
+    default ``p=0.25`` partially flattens the normalized momentum spectrum. The
+    supported range is ``0 < p <= 1``: ``p=1`` is Frobenius-normalized momentum,
+    while smaller positive values make the spectrum more homogeneous without
+    using the singular p=0 polar endpoint.
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ def _check_homogeneous_p(p: float) -> None:
         raise ValueError(f"HomogeneousMuon requires 0 < p <= 1, got {p}")
 
 
-def power_spectrum_via_svd(G: Tensor, p: float = 0.25) -> Tensor:
-    """Return ``U diag(sigma^p) V^T`` from an exact compact SVD.
+def power_spectrum_via_svd(G: Tensor, p: float = 0.25, eps: float = 1e-7) -> Tensor:
+    """Return ``U diag(sigma^p) V^T`` from the SVD of ``G / ||G||_F``.
 
     Since ``0 < p <= 1``, exact zero and exact one are fixed points of the map:
     ``0^p = 0`` and ``1^p = 1``.
@@ -40,6 +40,8 @@ def power_spectrum_via_svd(G: Tensor, p: float = 0.25) -> Tensor:
     _check_homogeneous_p(p)
 
     X = G.float()
+    X = X / (torch.linalg.norm(X) + eps)
+
     transposed = X.size(-2) > X.size(-1)
     if transposed:
         X = X.mT
