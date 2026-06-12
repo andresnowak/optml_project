@@ -2,20 +2,20 @@
 # ============================================================
 # Targeted reviewer-response experiments.
 #
-# This script turns the review gaps into reproducible W&B job batches and
-# splits them into two practical submission parts:
+# This script turns the review gaps into reproducible W&B job batches. The
+# default split is deliberately lean: about ten jobs total, using the report's
+# existing seed-0 runs as anchors.
 #
 #   DRY_RUN=1 scripts/reviewer_experiments.sh part-a
 #   DRY_RUN=1 scripts/reviewer_experiments.sh part-b
 #
-# Defaults are chosen to extend the existing report runs without making the
-# response unnecessarily expensive:
-#   * SEEDS=1,2 assumes seed 0 already exists for the report arms.
-#   * Full-budget runs use STEPS=1526 (400M tokens).
-#   * Noise and safeguard stress tests use SHORT_STEPS=760 by default.
-#   * Cost profiles use PROFILE_STEPS=220 and log timing every 10 steps.
+# The full reviewer-proof matrix is still available as full-a/full-b, but that
+# is intentionally no longer the default.
 #
-# For a clean from-scratch rerun, set SEEDS=0,1,2 and matching *_SEEDS vars.
+# Budgets:
+#   * Full-budget runs use STEPS=1526 (400M tokens).
+#   * Noise tests use SHORT_STEPS=760 by default.
+#   * Cost profiles use PROFILE_STEPS=220 and log timing every 10 steps.
 # ============================================================
 set -euo pipefail
 
@@ -37,6 +37,10 @@ SAFEGUARD_SEEDS="${SAFEGUARD_SEEDS:-0}"
 RELMUON_SEEDS="${RELMUON_SEEDS:-0}"
 PROFILE_SEEDS="${PROFILE_SEEDS:-0}"
 HORIZON_SEEDS="${HORIZON_SEEDS:-0}"
+LEAN_ROUTE_SEED="${LEAN_ROUTE_SEED:-1}"
+LEAN_NOISE_SEED="${LEAN_NOISE_SEED:-0}"
+LEAN_RELMUON_SEED="${LEAN_RELMUON_SEED:-0}"
+LEAN_PROFILE_SEED="${LEAN_PROFILE_SEED:-0}"
 
 ROUTE_LRS="${ROUTE_LRS:-0.01,0.02,0.05,0.2}"
 ROUTE_VARIANTS="${ROUTE_VARIANTS:-dynmuon,route_align,route_stable}"
@@ -56,8 +60,12 @@ usage: scripts/reviewer_experiments.sh <phase>
 
 phases:
   prep                 prepare FineWeb cache for STEPS
-  part-a               routing grid + router-safeguard stress tests
-  part-b               proxy seeds + spectrum seeds + noise + RelMuon confound + cost profile
+  part-a               lean routing add-on (4 jobs)
+  part-b               lean controls/profile add-on (6 jobs)
+  full-a               full routing grid + router-safeguard stress tests
+  full-b               full proxy/spectrum/noise/RelMuon/cost matrix
+  lean-routing         same as part-a
+  lean-controls        same as part-b
   routing-grid         seeded route on/off grid across ROUTE_LRS
   proxy-seeds          seed the SNR / EMA-SNR proxy arms at PROXY_LR
   spectrum-seeds       seed random/power/inverted spectrum controls
@@ -69,7 +77,8 @@ phases:
 
 common env overrides:
   DRY_RUN=1, SWEEP_PROJECT, STEPS, SHORT_STEPS, PROFILE_STEPS,
-  SEEDS, ROUTE_LRS, RELMUON_LRS, NOISE_LAMBDAS
+  LEAN_ROUTE_SEED, LEAN_NOISE_SEED, LEAN_RELMUON_SEED,
+  LEAN_PROFILE_SEED, SEEDS, ROUTE_LRS, RELMUON_LRS, NOISE_LAMBDAS
 EOF
 }
 
@@ -162,6 +171,22 @@ phase_routing_grid() {
             done
         done
     done
+}
+
+phase_lean_routing() {
+    # Four full-budget jobs. These extend the report's existing seed-0 points
+    # without launching the full 4-LR x 3-variant x multi-seed grid.
+    #
+    # eta=0.05: checks the reported one-sided "helps above optimum" claim for
+    # the winning alignment proxy.
+    # eta=0.2: checks the safety-net claim at 10x the tuned LR, using the
+    # stable-rank router that already has the seed-0 high-LR report point.
+    local group="review_lean_route"
+    local seed="${LEAN_ROUTE_SEED}"
+    submit_route_variant dynmuon 0.05 "${seed}" "${group}"
+    submit_route_variant route_align 0.05 "${seed}" "${group}"
+    submit_route_variant dynmuon 0.2 "${seed}" "${group}"
+    submit_route_variant route_stable 0.2 "${seed}" "${group}"
 }
 
 phase_proxy_seeds() {
@@ -279,6 +304,39 @@ phase_cost_profile() {
     done
 }
 
+phase_lean_controls() {
+    # Six jobs total. These cover the high-risk non-routing objections:
+    # designed-for anisotropic noise, RelMuon protocol confound, and the
+    # attention-only cost oddity.
+    local noise_group="review_lean_noise"
+    local rel_group="review_lean_relmuon"
+    local cost_group="review_lean_cost"
+    local noise_seed="${LEAN_NOISE_SEED}"
+    local rel_seed="${LEAN_RELMUON_SEED}"
+    local profile_seed="${LEAN_PROFILE_SEED}"
+    local profile_tag
+    profile_tag="$(lr_tag "${PROFILE_LR}")"
+
+    submit_single "${noise_group}" "review_lean_noise_dynmuon_mlr0p02_lam3p0_seed${noise_seed}" \
+        configs/dynmuon.yaml "${SHORT_STEPS}" --muon-lr 0.02 --seed "${noise_seed}" \
+        --noise-lambda 3.0
+    submit_single "${noise_group}" "review_lean_noise_route_stable_mlr0p02_lam3p0_seed${noise_seed}" \
+        configs/route.yaml "${SHORT_STEPS}" --muon-lr 0.02 --seed "${noise_seed}" \
+        --modulate-metric stable_rank --beta 0.15 --noise-lambda 3.0
+
+    submit_single "${rel_group}" "review_lean_relmuon_log1p_wd_mlr0p1_seed${rel_seed}" \
+        configs/relmuon_log1p_wd.yaml "${STEPS}" --muon-lr 0.1 --seed "${rel_seed}"
+    submit_single "${rel_group}" "review_lean_relmuon_log1p_matched_mlr0p1_seed${rel_seed}" \
+        configs/relmuon_log1p_matched.yaml "${STEPS}" --muon-lr 0.1 --seed "${rel_seed}"
+
+    submit_single "${cost_group}" "review_lean_profile_relmuon_full_mlr${profile_tag}_seed${profile_seed}" \
+        configs/relmuon_log1p.yaml "${PROFILE_STEPS}" --muon-lr "${PROFILE_LR}" --seed "${profile_seed}" \
+        --log-every 10 --val-loss-every 110
+    submit_spatial "${cost_group}" "review_lean_profile_relmuon_attention_mlr${profile_tag}_seed${profile_seed}" \
+        configs/relmuon_attention.yaml "${PROFILE_STEPS}" --muon-lr "${PROFILE_LR}" --seed "${profile_seed}" \
+        --log-every 10 --val-loss-every 110
+}
+
 phase_horizon() {
     local group="review_horizon"
     local tag
@@ -303,11 +361,17 @@ case "${cmd}" in
     relmuon-confound) phase_relmuon_confound ;;
     cost-profile) phase_cost_profile ;;
     horizon) phase_horizon ;;
-    part-a)
+    lean-routing|part-a)
+        phase_lean_routing
+        ;;
+    lean-controls|part-b)
+        phase_lean_controls
+        ;;
+    full-a)
         phase_routing_grid
         phase_safeguards
         ;;
-    part-b)
+    full-b)
         phase_proxy_seeds
         phase_spectrum_seeds
         phase_noise_final_scale
