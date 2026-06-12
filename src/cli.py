@@ -45,6 +45,7 @@ def main() -> None:
     ap.add_argument("--kaon-lambda", dest="kaon_lambda", type=float)
     ap.add_argument("--kaon-output-scale", dest="kaon_output_scale", type=float)
     ap.add_argument("--gate-tau", dest="gate_tau", type=float)
+    ap.add_argument("--homogeneous-p", dest="homogeneous_p", type=float)
     ap.add_argument("--noise-lambda", dest="noise_lambda", type=float)
     ap.add_argument("--beta", type=float)
     ap.add_argument("--lean-norm", dest="lean_norm", choices=["raw", "zscore"])

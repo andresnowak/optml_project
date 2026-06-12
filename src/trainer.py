@@ -600,7 +600,7 @@ def train(cfg: dict, logger=None) -> tuple[GPT, object | None]:
             timing_optimizer = 0.0
             timing_steps = 0
             if cfg.get("log_weight_svd", False) and cfg.get("matrix_optimizer") in (
-                "muon", "gated_muon", "relmuon", "dynmuon", "kaon",
+                "muon", "gated_muon", "homogeneous_muon", "relmuon", "dynmuon", "kaon",
             ):
                 log_matrix_weight_spectra(
                     model,

@@ -20,7 +20,7 @@ import copy
 import pytest
 import torch
 
-from src import DynMuonRoute, Kaon, build_optimizers, logistic_route, newton_schulz
+from src import DynMuonRoute, HomogeneousMuon, Kaon, build_optimizers, logistic_route, newton_schulz
 from src.models import GPT, GPTConfig
 from src.optimizers.dynmuon import (
     logistic_schedule_p,
@@ -28,6 +28,7 @@ from src.optimizers.dynmuon import (
     shape_exact_svd,
 )
 from src.optimizers.gated_muon import gated_zeropower_via_newtonschulz5
+from src.optimizers.homogeneous_muon import power_spectrum_via_svd
 from src.optimizers.kaon import kaon_chaos_map, kaon_update
 from src.optimizers.muon import muon_update, zeropower_via_svd
 from src.optimizers.relmuon import (
@@ -241,6 +242,47 @@ def test_fixed_mode_constant_exponent(fixed_p, name):
         assert torch.allclose(sv, torch.ones_like(sv), atol=1e-5)
     else:                                       # D(1) = M = G (raw spectrum!)
         assert torch.allclose(update, g, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("p", [0.25, 0.5, 1.0])
+def test_homogeneous_muon_fixed_power_spectrum(p):
+    """HomogeneousMuon applies the exact fixed SVD power map to its lookahead
+    matrix. With zero momentum and no Nesterov, the lookahead matrix is the
+    current gradient."""
+    torch.manual_seed(23)
+    g = torch.randn(7, 11)
+    w = torch.zeros_like(g, requires_grad=True)
+    opt = HomogeneousMuon([w], lr=1.0, p=p, mu=0.0, nesterov=False, adjust_lr_fn=None)
+    w.grad = g.clone()
+    opt.step()
+    got = -w.detach()
+    expected = power_spectrum_via_svd(g, p=p)
+    assert torch.allclose(got, expected, atol=1e-5, rtol=1e-5)
+    assert opt.state[w]["last_p"] == p
+
+
+@pytest.mark.parametrize("p", [-0.25, 0.0, 1.25])
+def test_homogeneous_muon_rejects_out_of_range_p(p):
+    with pytest.raises(ValueError):
+        power_spectrum_via_svd(torch.eye(3), p=p)
+    with pytest.raises(ValueError):
+        HomogeneousMuon([torch.zeros(3, 3, requires_grad=True)], p=p)
+
+
+def test_build_homogeneous_muon_optimizer():
+    """The registry exposes HomogeneousMuon through matrix_optimizer."""
+    model = GPT(GPTConfig(sequence_length=8, vocab_size=32, n_layer=1, n_head=2, n_embd=8))
+    opt, adamw = build_optimizers(model, {
+        "matrix_optimizer": "homogeneous_muon",
+        "muon_lr": 0.02,
+        "adam_lr": 6e-4,
+        "embed_lr": 6e-3,
+        "weight_decay": 0.1,
+        "homogeneous_p": 0.25,
+    })
+    assert isinstance(opt, HomogeneousMuon)
+    assert opt.param_groups[0]["p"] == 0.25
+    assert adamw is not None
 
 
 def test_pseudo_power_handles_rank_deficiency():
