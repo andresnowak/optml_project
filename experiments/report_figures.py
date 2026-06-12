@@ -504,7 +504,7 @@ def fig_proxy_depth(args) -> None:
 
 
 def fig_beta(args) -> None:
-    """Final validation loss vs router gain beta for available proxy arms."""
+    """Final validation loss vs router gain beta for the completed proxy arms."""
     baseline_runs = [
         "route_lrfix_beta0_mlr0p02_20260611_lrfix",
         "route_lrfix_beta0_mlr0p02_20260611_clean",
@@ -512,6 +512,7 @@ def fig_beta(args) -> None:
     baseline = statistics.mean([_value_for_run(run) for run in baseline_runs])
     cases = [
         ("Stable rank", {
+            -0.15: ["proxy_stable_rank_negbeta_0p02"],
             0.0: baseline_runs,
             0.15: [
                 "route_fill_beta0p15_mlr0p02_20260611_clean",
@@ -522,6 +523,7 @@ def fig_beta(args) -> None:
             0.30: ["route_fill_beta0p3_mlr0p02_20260611_routefill"],
         }),
         ("Alignment", {
+            -0.15: ["proxy_alignment_negbeta_0p02"],
             0.0: baseline_runs,
             0.15: ["route_align_beta0p15_mlr0p02_20260611_clean"],
             0.30: ["route_align_beta0p3_mlr0p02_20260611_clean"],
@@ -530,10 +532,13 @@ def fig_beta(args) -> None:
             -0.15: ["proxy_snr_negbeta_0p02"],
             0.0: baseline_runs,
             0.15: ["proxy_snr_posbeta_0p02"],
+            0.30: ["proxy_snr_beta0p3_0p02"],
         }),
         ("EMA-SNR", {
             -0.15: ["proxy_snr_ema_negbeta_0p02"],
             0.0: baseline_runs,
+            0.15: ["proxy_snr_ema_posbeta_0p02"],
+            0.30: ["proxy_snr_ema_beta0p3_0p02"],
         }),
     ]
     fig, ax = plt.subplots(figsize=(5.25, 3.25))
