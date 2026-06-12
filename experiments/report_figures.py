@@ -33,12 +33,13 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker as mticker  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.optimizers.dynmuon import logistic_schedule_p  # noqa: E402
 
-WANDB_DIR = os.path.join("results", "wandb")
+WANDB_DIR = os.environ.get("REPORT_WANDB_DIR", os.path.join("results", "wandb"))
 OUT_DIR = os.path.join("report", "figures")
 
 METHOD_LABELS = {
@@ -52,6 +53,7 @@ SEED_NOISE = 0.001
 MAIN_SWEEPS = (
     ("AdamW", lambda r: r.get("run", "").startswith("bowl_adamw_"), "adam_lr"),
     ("Muon", lambda r: r.get("run", "").startswith("bowl_muon_"), "muon_lr"),
+    ("Muon-SVD", lambda r: r.get("run", "").startswith("muon_svd_polar_wd_lr_400m_"), "muon_lr"),
     ("DynMuon", lambda r: r.get("run", "").startswith("bowl_dynmuon_"), "muon_lr"),
     ("Route-align", lambda r: r.get("run", "").startswith("route_align_beta0p15_"), "muon_lr"),
     ("RelMuon-log1p", lambda r: r.get("run", "").startswith("bowl_relmuon_log1p_"), "muon_lr"),
@@ -66,6 +68,21 @@ LAYER_LABELS = {
     "mlp.fc": "MLP Input",
     "mlp.proj": "MLP Output",
 }
+LAYER_SHORT_LABELS = {
+    "attn.q": "Q",
+    "attn.k": "K",
+    "attn.v": "V",
+    "attn.proj": "Attn out",
+    "mlp.fc": "MLP in",
+    "mlp.proj": "MLP out",
+}
+PROXY_DEPTH_RUNS = (
+    ("Stable rank\n$\\beta=+.15$", "route_fill_beta0p15_mlr0p02_20260611_clean"),
+    ("SNR\n$\\beta=+.15$", "proxy_snr_posbeta_0p02"),
+    ("SNR\n$\\beta=-.15$", "proxy_snr_negbeta_0p02"),
+    ("EMA-SNR\n$\\beta=-.15$", "proxy_snr_ema_negbeta_0p02"),
+    ("Alignment\n$\\beta=+.15$", "route_align_beta0p15_mlr0p02_20260611_clean"),
+)
 _BLOCK_RE = re.compile(r"blocks\.(\d+)\.")
 
 plt.rcParams.update({
@@ -226,7 +243,7 @@ def fig_lr_sweep(args) -> None:
     ax.set_xlabel("Matrix Learning Rate")
     ax.set_ylabel("Final Validation Loss")
     ax.set_title("Bracketed Learning-Rate Bowls")
-    ax.legend(fontsize=7.5, ncol=2, frameon=True)
+    ax.legend(fontsize=7.2, ncol=2, frameon=True)
     ax.grid(alpha=0.3)
     ax.text(
         0.99,
@@ -276,11 +293,12 @@ def fig_losses(args) -> None:
     """
     start_step = getattr(args, "start_step", 125)
     runs = [
-        ("bowl_muon_mlr0p02", "Muon"),
-        ("route_align_beta0p15_mlr0p02_20260611_clean", "Route-align"),
-        ("bowl_dynmuon_mlr0p02", "DynMuon"),
-        ("bowl_relmuon_log1p_mlr0p1", "RelMuon-log1p"),
         ("bowl_adamw_alr0p0012", "AdamW"),
+        ("bowl_muon_mlr0p02", "Muon"),
+        ("muon_svd_polar_wd_lr_400m_muon_2e-2_adam_0.002", "Muon-SVD"),
+        ("bowl_dynmuon_mlr0p02", "DynMuon"),
+        ("route_align_beta0p15_mlr0p02_20260611_clean", "Route-align"),
+        ("bowl_relmuon_log1p_mlr0p1", "RelMuon-log1p"),
     ]
     fig, axes = plt.subplots(2, 1, figsize=(4.9, 4.15), sharex=True)
     panels = [
@@ -371,54 +389,152 @@ def fig_depth(args) -> None:
     _save(fig, "depth_routing")
 
 
+def _route_offset_grid(run: str, depths: list[int], total_steps: int) -> np.ndarray:
+    hist = _find_history(run)
+    if hist is None:
+        raise SystemExit(f"history for {run} not found; pull it first")
+    values: dict[tuple[str, int], list[float]] = {}
+    for key in hist:
+        if not key.startswith("route/p/"):
+            continue
+        name = key[len("route/p/"):]
+        block = _BLOCK_RE.search(name)
+        ltype = next((t for t in LAYER_TYPES if name.endswith(t + ".weight")), None)
+        if block is None or ltype is None:
+            continue
+        steps, ps = _series(hist, key)
+        deltas = [
+            p - logistic_schedule_p(s, total_steps, -0.25, 1.0, 0.04, 0.04)
+            for s, p in zip(steps, ps)
+        ]
+        if not deltas:
+            continue
+        mean_delta = sum(deltas) / len(deltas)
+        values.setdefault((ltype, int(block.group(1))), []).append(mean_delta)
+
+    grid = np.full((len(LAYER_TYPES), len(depths)), np.nan)
+    for i, ltype in enumerate(LAYER_TYPES):
+        for j, depth in enumerate(depths):
+            cell = values.get((ltype, depth), [])
+            if cell:
+                grid[i, j] = statistics.mean(cell)
+    return grid
+
+
+def _route_depths(run: str) -> set[int]:
+    hist = _find_history(run)
+    if hist is None:
+        raise SystemExit(f"history for {run} not found; pull it first")
+    depths = set()
+    for key in hist:
+        if not key.startswith("route/p/"):
+            continue
+        block = _BLOCK_RE.search(key)
+        if block is not None:
+            depths.add(int(block.group(1)))
+    return depths
+
+
+def fig_proxy_depth(args) -> None:
+    """Compact matrix-type-by-depth summary of routed p-offsets for proxy arms."""
+    total_steps = getattr(args, "total_steps", 1526)
+    all_depths: set[int] = set()
+    for _, run in PROXY_DEPTH_RUNS:
+        all_depths.update(_route_depths(run))
+    depths = sorted(all_depths)
+    if not depths:
+        raise SystemExit("no routed layer-depth metrics found for proxy summary")
+
+    grids = [(label, _route_offset_grid(run, depths, total_steps)) for label, run in PROXY_DEPTH_RUNS]
+    finite = np.concatenate([grid[np.isfinite(grid)] for _, grid in grids])
+    limit = max(0.05, float(np.nanmax(np.abs(finite)))) if finite.size else 0.1
+
+    fig, axes = plt.subplots(
+        len(grids), 1, figsize=(7.35, 6.25), sharex=True, constrained_layout=True
+    )
+    last_im = None
+    for ax, (label, grid) in zip(axes, grids):
+        last_im = ax.imshow(grid, aspect="auto", cmap="coolwarm", vmin=-limit, vmax=limit)
+        ax.set_yticks(range(len(LAYER_TYPES)))
+        ax.set_yticklabels([LAYER_SHORT_LABELS[t] for t in LAYER_TYPES], fontsize=6.8)
+        ax.text(
+            -0.10, 0.5, label, transform=ax.transAxes,
+            ha="right", va="center", fontsize=7.2
+        )
+        ax.tick_params(axis="both", length=2)
+    axes[-1].set_xticks(range(len(depths)))
+    axes[-1].set_xticklabels(depths, fontsize=7)
+    axes[-1].set_xlabel("Transformer Block")
+    for ax in axes[:-1]:
+        ax.tick_params(labelbottom=False)
+
+    assert last_im is not None
+    cbar = fig.colorbar(last_im, ax=axes.ravel().tolist(), pad=0.015, shrink=0.92)
+    cbar.set_label(r"Mean Offset $p_{t,\ell} - p_t$")
+    fig.suptitle("Proxy Routers Change Different Matrix Types at Different Depths", fontsize=10)
+    _save(fig, "proxy_depth_summary")
+
+
 def fig_beta(args) -> None:
-    """Final validation loss vs router gain beta (at one fixed LR)."""
-    rows = _load_summaries()
-    pts = []
-    for row in rows:
-        run = row["run"]
-        group = row.get("group", "")
-        if not (run.startswith("route_") or group.startswith("route")):
-            continue
-        if _flt(row, "train_steps") not in (None, 1526.0):
-            continue
-        if f"mlr{args.lr}" not in run and f"_{args.lr}" not in run:
-            continue
-        if row.get("routing_mode") != "schedule_modulated" or row.get("magnitude") == "polar_fro":
-            continue
-        # One proxy only (default stable_rank): mixing proxies across the same
-        # beta values produces a meaningless zigzag.
-        if (row.get("modulate_metric") or "stable_rank") != "stable_rank":
-            continue
-        beta, val = _flt(row, "beta"), _flt(row, "final_val_loss")
-        if beta is not None and val:
-            pts.append((beta, val, run))
-    if not pts:
-        raise SystemExit(f"no route runs found at lr tag {args.lr}")
-    pts.sort()
-    by_beta: dict[float, list[float]] = {}
-    for beta, val, _ in pts:
-        by_beta.setdefault(beta, []).append(val)
-    betas = sorted(by_beta)
-    means = [statistics.mean(by_beta[b]) for b in betas]
-    stds = [statistics.stdev(by_beta[b]) if len(by_beta[b]) > 1 else 0.0 for b in betas]
-    baseline = means[0]
-    fig, ax = plt.subplots(figsize=(4.75, 3.25))
+    """Final validation loss vs router gain beta for available proxy arms."""
+    baseline_runs = [
+        "route_lrfix_beta0_mlr0p02_20260611_lrfix",
+        "route_lrfix_beta0_mlr0p02_20260611_clean",
+    ]
+    baseline = statistics.mean([_value_for_run(run) for run in baseline_runs])
+    cases = [
+        ("Stable rank", {
+            0.0: baseline_runs,
+            0.15: [
+                "route_fill_beta0p15_mlr0p02_20260611_clean",
+                "route_fill_beta0p15_mlr0p02_20260611_routefill",
+                "seed1_route_0p02",
+                "seed2_route_0p02",
+            ],
+            0.30: ["route_fill_beta0p3_mlr0p02_20260611_routefill"],
+        }),
+        ("Alignment", {
+            0.0: baseline_runs,
+            0.15: ["route_align_beta0p15_mlr0p02_20260611_clean"],
+            0.30: ["route_align_beta0p3_mlr0p02_20260611_clean"],
+        }),
+        ("SNR", {
+            -0.15: ["proxy_snr_negbeta_0p02"],
+            0.0: baseline_runs,
+            0.15: ["proxy_snr_posbeta_0p02"],
+        }),
+        ("EMA-SNR", {
+            -0.15: ["proxy_snr_ema_negbeta_0p02"],
+            0.0: baseline_runs,
+        }),
+    ]
+    fig, ax = plt.subplots(figsize=(5.25, 3.25))
     ax.axhspan(-SEED_NOISE, SEED_NOISE, color="0.85", alpha=0.65,
                label=r"seed noise ($\pm0.001$)")
     ax.axhline(0.0, color="0.25", lw=1.0)
-    ax.scatter([p[0] for p in pts], [p[1] - baseline for p in pts], s=22, alpha=0.55,
-               label="individual runs")
-    ax.errorbar(betas, [m - baseline for m in means], yerr=stds,
-                marker="o", color="C1", lw=2.0, capsize=3, label="mean")
-    ax.set_xlabel(r"Stable-rank router gain $\beta$")
+    markers = ["o", "s", "^", "D"]
+    for (label, by_beta), marker in zip(cases, markers):
+        betas = sorted(by_beta)
+        means, stds = [], []
+        for beta in betas:
+            vals = [_value_for_run(run) for run in by_beta[beta]]
+            mean, std = _mean_std(vals)
+            means.append(mean - baseline)
+            stds.append(std)
+            if len(vals) > 1:
+                ax.scatter(
+                    [beta] * len(vals), [v - baseline for v in vals],
+                    marker=marker, s=14, alpha=0.25, color="0.2", zorder=2,
+                )
+        ax.errorbar(betas, means, yerr=stds, marker=marker, lw=1.8,
+                    capsize=3, label=label, zorder=3)
+    ax.set_xlabel(r"Router gain $\beta$")
     ax.set_ylabel(r"$\Delta$ final validation loss vs $\beta=0$")
-    ax.set_title("Stable-Rank Routing Hurts at the Tuned LR")
-    ax.legend(fontsize=8)
+    ax.set_title("Proxy Gain Response at the Tuned LR")
+    ax.set_xticks([-0.15, 0.0, 0.15, 0.30])
+    ax.legend(fontsize=7.6, ncol=2)
     ax.grid(alpha=0.3)
     _save(fig, "beta_sweep")
-    for beta, val, run in pts:
-        print(f"  beta={beta:g}: {val:.4f}  ({run})")
 
 
 def fig_proxies(args) -> None:
@@ -644,8 +760,14 @@ def fig_route_ablation(args) -> None:
         ("Decoupled\nbest grid", [_value_for_run("route_lrgrid_decoupled_ref_mlr0p01_20260611_lrgrid")]),
     ]
     high_lr_cases = [
-        ("DynMuon\n$\\eta=.2$", [_value_for_run("route_ctrl_dynmuon_0p2")]),
-        ("Route\n$\\eta=.2$", [_value_for_run("route_0p2")]),
+        ("DynMuon\n$\\eta=.2$", [
+            _value_for_run("route_ctrl_dynmuon_0p2"),
+            _value_for_run("review_route_dynmuon_mlr0p2_seed1"),
+        ]),
+        ("Route\n$\\eta=.2$", [
+            _value_for_run("route_0p2"),
+            _value_for_run("review_route_stable_mlr0p2_seed1"),
+        ]),
         ("Route $\\beta=.3$\n$\\eta=.2$", [_value_for_run("route_beta0p3_0p2")]),
         ("Decoupled\n$\\eta=.2$", [_value_for_run("route_decoupled_0p2")]),
     ]
@@ -653,7 +775,7 @@ def fig_route_ablation(args) -> None:
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(7.3, 3.2), constrained_layout=True)
     for ax, cases, title, base in (
         (ax0, tuned_cases, "Tuned-LR Decomposition", dyn),
-        (ax1, high_lr_cases, "High-LR Stress Test", _value_for_run("route_ctrl_dynmuon_0p2")),
+        (ax1, high_lr_cases, "High-LR Stress Test", _mean_std(high_lr_cases[0][1])[0]),
     ):
         labels = [c[0] for c in cases]
         means, stds = zip(*[_mean_std(vals) for _, vals in cases])
@@ -676,6 +798,76 @@ def fig_route_ablation(args) -> None:
                 y, va = (d - 0.001, "top")
             ax.text(i, y, f"{d:+.3f}", ha="center", va=va, fontsize=7)
     _save(fig, "route_ablation")
+
+
+def fig_route_robustness(args) -> None:
+    """Alignment-only route robustness across the completed LR points."""
+    dyn = {
+        0.01: ["bowl_dynmuon_mlr0p01"],
+        0.02: ["bowl_dynmuon_mlr0p02", "seed1_dynmuon_0p02", "seed2_dynmuon_0p02"],
+        0.05: ["bowl_dynmuon_mlr0p05", "review_route_dynmuon_mlr0p05_seed1"],
+    }
+    route = {
+        0.01: ["route_align_beta0p15_mlr0p01_20260611_clean"],
+        0.02: ["route_align_beta0p15_mlr0p02_20260611_clean"],
+        0.05: ["route_align_beta0p15_mlr0p05_20260611_clean", "review_route_align_mlr0p05_seed1"],
+    }
+
+    def series(by_lr: dict[float, list[str]]) -> tuple[list[float], list[float], list[float], list[int]]:
+        xs, means, stds, counts = [], [], [], []
+        for lr in sorted(by_lr):
+            vals = [_value_for_run(run) for run in by_lr[lr]]
+            mean, std = _mean_std(vals)
+            xs.append(lr)
+            means.append(mean)
+            stds.append(std)
+            counts.append(len(vals))
+        return xs, means, stds, counts
+
+    x_dyn, y_dyn, e_dyn, n_dyn = series(dyn)
+    x_route, y_route, e_route, n_route = series(route)
+    gains = [d - r for d, r in zip(y_dyn, y_route)]
+    gain_errs = [
+        math.sqrt(de ** 2 + re ** 2) if nd > 1 or nr > 1 else 0.0
+        for de, re, nd, nr in zip(e_dyn, e_route, n_dyn, n_route)
+    ]
+
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(7.2, 3.15), constrained_layout=True)
+    ax0.errorbar(x_dyn, y_dyn, yerr=e_dyn, marker="o", lw=2.0, capsize=3,
+                 label="DynMuon")
+    ax0.errorbar(x_route, y_route, yerr=e_route, marker="s", lw=2.0, capsize=3,
+                 label=r"Route-align ($\beta=0.15$)")
+    ax0.set_xscale("log")
+    ax0.set_xticks(x_dyn)
+    ax0.set_xticklabels(["0.01", "0.02", "0.05"])
+    ax0.xaxis.set_minor_locator(mticker.NullLocator())
+    ax0.set_xlabel("Matrix Learning Rate")
+    ax0.set_ylabel("Final Validation Loss")
+    ax0.set_title("Alignment Router Across Learning Rates")
+    ax0.legend(fontsize=8)
+    ax0.grid(alpha=0.3)
+
+    ax1.axhline(0.0, color="0.25", lw=1.0)
+    ax1.axhspan(-SEED_NOISE, SEED_NOISE, color="0.88", alpha=0.75,
+                label=r"seed noise")
+    colors = ["#d62728" if g < -SEED_NOISE else ("0.55" if abs(g) <= SEED_NOISE else "#2ca02c")
+              for g in gains]
+    ax1.bar([str(x).rstrip("0").rstrip(".") for x in x_dyn], gains,
+            yerr=gain_errs, capsize=3, color=colors, alpha=0.85, width=0.62)
+    ax1.set_xlabel("Matrix Learning Rate")
+    ax1.set_ylabel("DynMuon loss - Route-align loss")
+    ax1.set_title("Positive Means Routing Helps")
+    ax1.grid(alpha=0.3, axis="y")
+    for i, g in enumerate(gains):
+        va = "bottom" if g >= 0 else "top"
+        y = g + (0.002 if g >= 0 else -0.002)
+        ax1.text(i, y, f"{g:+.3f}", ha="center", va=va, fontsize=7)
+    ax1.text(
+        0.02, 0.98,
+        "Single proxy: alignment.\nError bars show available seeds.",
+        transform=ax1.transAxes, ha="left", va="top", fontsize=7, color="0.35",
+    )
+    _save(fig, "route_robustness")
 
 
 def fig_relmuon_attention(args) -> None:
@@ -767,6 +959,8 @@ def main() -> None:
     d = sub.add_parser("depth")
     d.add_argument("--run", required=True)
     d.add_argument("--total-steps", dest="total_steps", type=int, default=1526)
+    pd = sub.add_parser("proxy_depth")
+    pd.add_argument("--total-steps", dest="total_steps", type=int, default=1526)
     b = sub.add_parser("beta")
     b.add_argument("--lr", default="0p02", help="LR tag in run names, e.g. 0p02")
     sub.add_parser("proxies")
@@ -774,6 +968,7 @@ def main() -> None:
     sub.add_parser("equivalence")
     sub.add_parser("cost")
     sub.add_parser("route_ablation")
+    sub.add_parser("route_robustness")
     sub.add_parser("relmuon_attention")
     sub.add_parser("spectrum_controls")
     sub.add_parser("all")
@@ -787,14 +982,14 @@ def main() -> None:
         fig_equivalence(args)
         fig_cost(args)
         fig_route_ablation(args)
+        fig_route_robustness(args)
         fig_relmuon_attention(args)
         fig_spectrum_controls(args)
         try:
-            args.run = "route_0p2"
             args.total_steps = 1526
-            fig_depth(args)
+            fig_proxy_depth(args)
         except SystemExit as e:
-            print(f"skip depth: {e}")
+            print(f"skip proxy depth: {e}")
         for fn, label in ((fig_beta, "beta"), (fig_proxies, "proxies")):
             try:
                 args.lr = "0p02"
@@ -804,8 +999,10 @@ def main() -> None:
         return
     {"lr_sweep": fig_lr_sweep, "bowls": fig_lr_sweep, "curves": fig_curves,
      "losses": fig_losses, "depth": fig_depth, "beta": fig_beta,
-     "proxies": fig_proxies, "svd_ns": fig_svd_ns, "equivalence": fig_equivalence, "cost": fig_cost,
-     "route_ablation": fig_route_ablation, "relmuon_attention": fig_relmuon_attention,
+     "proxies": fig_proxies, "proxy_depth": fig_proxy_depth,
+     "svd_ns": fig_svd_ns, "equivalence": fig_equivalence, "cost": fig_cost,
+     "route_ablation": fig_route_ablation, "route_robustness": fig_route_robustness,
+     "relmuon_attention": fig_relmuon_attention,
      "spectrum_controls": fig_spectrum_controls}[args.cmd](args)
 
 
