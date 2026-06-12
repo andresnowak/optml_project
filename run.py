@@ -9,9 +9,9 @@ Pipeline (all steps are idempotent):
   1. Restore experiments/report_wandb_bundle.jsonl.gz into a clean local cache.
      Reviewers do not need W&B credentials.
   2. Regenerate the report figures into report/figures/
-     (experiments/report_figures.py): LR bowls, loss curves, depth-resolved
+     (experiments/report_figures.py): LR bowls, late loss curves, depth-resolved
      routing, beta sweep, proxy comparison, SVD-vs-Newton-Schulz evidence,
-     exponent/magnitude diagnostics, and the cost comparison.
+     and the cost comparison.
   3. Print the summary tables used in the report.
 
 Maintainers can refresh the bundle from W&B with --refresh-wandb. Training itself
@@ -44,13 +44,6 @@ REPORT_GROUPS = (
 )
 BUNDLE_GROUPS = (*REPORT_GROUPS, "muon_svd_vs_ns")
 REPORT_HISTORY_PREFIXES = ("val/", "train/", "route/p/")
-# Loss-curve panel: the same selected representatives used in the LR bowl.
-CURVE_RUNS = (
-    "bowl_adamw_alr0p0012,bowl_muon_mlr0p02,"
-    "muon_svd_polar_wd_lr_400m_muon_2e-2_adam_0.002,bowl_dynmuon_mlr0p02,"
-    "route_align_beta0p15_mlr0p02_20260611_clean,bowl_relmuon_log1p_mlr0p1"
-)
-CURVE_LABELS = "AdamW,Muon,Muon-SVD,DynMuon,Route-align,RelMuon-log1p"
 
 
 def sh(*cmd: str, check: bool = True, env: dict[str, str] | None = None) -> int:
@@ -76,10 +69,8 @@ def step_figures(wandb_dir: str) -> None:
     env = {**os.environ, "REPORT_WANDB_DIR": wandb_dir}
     fig = lambda *a: sh(PY, "experiments/report_figures.py", *a, check=False, env=env)
     fig("bowls")
-    fig("svd_ns")
     fig("equivalence")
     fig("cost")
-    fig("curves", "--runs", CURVE_RUNS, "--labels", CURVE_LABELS)
     fig("losses")
     fig("proxy_depth")
     fig("beta", "--lr", "0p02")

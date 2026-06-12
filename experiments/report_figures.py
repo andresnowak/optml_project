@@ -10,7 +10,6 @@ minimal: one panel, labeled axes, no styling beyond defaults.
     python experiments/report_figures.py depth --run route_fill_beta0p15_mlr0p02_20260611_routefill
     python experiments/report_figures.py beta --lr 0p02
     python experiments/report_figures.py proxies
-    python experiments/report_figures.py svd_ns          # local computation, no W&B needed
     python experiments/report_figures.py cost
     python experiments/report_figures.py all             # everything available
 
@@ -48,6 +47,15 @@ METHOD_LABELS = {
     "bowl_dynmuon": "DynMuon",
     "bowl_relmuon_log1p": "RelMuon-log1p",
     "bowl_relmuon_rms": "RelMuon-RMS",
+}
+METHOD_COLORS = {
+    "AdamW": "#1f77b4",
+    "Muon": "#ff7f0e",
+    "Muon-SVD": "#2ca02c",
+    "DynMuon": "#d62728",
+    "Route-align": "#9467bd",
+    "RelMuon-log1p": "#8c564b",
+    "RelMuon-RMS": "#7f7f7f",
 }
 SEED_NOISE = 0.001
 MAIN_SWEEPS = (
@@ -218,6 +226,47 @@ def _save_aliases(fig, *names: str) -> None:
     plt.close(fig)
 
 
+def _label_delta_bars(ax, values: list[float], errors: list[float] | None = None, fontsize: int = 7) -> None:
+    """Place delta labels outside bars and reserve enough y-axis room."""
+    errors = errors or [0.0] * len(values)
+    lower, upper = 0.0, 0.0
+    for value, err in zip(values, errors):
+        if not math.isfinite(value):
+            continue
+        err = err if math.isfinite(err) else 0.0
+        lower = min(lower, value - err)
+        upper = max(upper, value + err)
+    span = max(upper - lower, 0.01)
+    label_offset = 0.035 * span
+    axis_pad = 0.12 * span
+    ax.set_ylim(lower - axis_pad, upper + axis_pad)
+    for i, (value, err) in enumerate(zip(values, errors)):
+        if not math.isfinite(value):
+            continue
+        err = err if math.isfinite(err) else 0.0
+        if value >= 0:
+            y, va = value + err + label_offset, "bottom"
+        else:
+            y, va = value - err - label_offset, "top"
+        ax.text(i, y, f"{value:+.3f}", ha="center", va=va, fontsize=fontsize, clip_on=False)
+
+
+def _label_positive_bars(ax, values: list[float], fmt: str, fontsize: int = 7) -> None:
+    """Label positive bars with enough top padding."""
+    finite = [value for value in values if math.isfinite(value)]
+    if not finite:
+        return
+    upper = max(finite)
+    span = max(upper, 1.0)
+    label_offset = 0.035 * span
+    ax.set_ylim(0.0, upper + 0.16 * span)
+    for i, value in enumerate(values):
+        if not math.isfinite(value):
+            continue
+        ax.text(i, value + label_offset, fmt.format(value), ha="center", va="bottom",
+                fontsize=fontsize, clip_on=False)
+
+
 def fig_lr_sweep(args) -> None:
     """Strict LR bowl: only finished sweeps whose best point is bracketed."""
     rows = _load_all_summaries()
@@ -257,27 +306,6 @@ def fig_lr_sweep(args) -> None:
     )
     print("plotted strict bowls:", ", ".join(plotted))
     _save_aliases(fig, "lr_sweep", "lr_bowls")
-
-
-def fig_curves(args) -> None:
-    """Validation-loss curves for a comma-separated list of runs."""
-    runs = [r.strip() for r in args.runs.split(",")]
-    fig, ax = plt.subplots(figsize=(4.4, 3.2))
-    for run in runs:
-        hist = _find_history(run)
-        if hist is None:
-            print(f"  (missing history for {run})")
-            continue
-        steps, vals = _series(hist, "val/loss")
-        label = args.labels.split(",")[runs.index(run)] if args.labels else run
-        ax.plot(steps, vals, label=label)
-    ax.set_xlabel("Training Step")
-    ax.set_ylabel("Validation Loss")
-    if args.ymax:
-        ax.set_ylim(top=args.ymax)
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
-    _save(fig, args.out or "loss_curves")
 
 
 def _filter_from_step(steps: list[int], vals: list[float], start_step: int) -> tuple[list[int], list[float]]:
@@ -570,11 +598,7 @@ def fig_proxies(args) -> None:
     ax.tick_params(axis="x", rotation=20)
     ax.legend(fontsize=8, loc="upper left")
     ax.grid(alpha=0.3, axis="y")
-    for i, d in enumerate(deltas):
-        if d >= 0:
-            ax.text(i, d + 0.0015, f"{d:+.3f}", ha="center", va="bottom", fontsize=7)
-        else:
-            ax.text(i, d / 2, f"{d:+.3f}", ha="center", va="center", fontsize=7)
+    _label_delta_bars(ax, list(deltas), list(stds))
     _save(fig, "proxy_comparison")
 
 
@@ -641,58 +665,6 @@ def fig_equivalence(args) -> None:
     _save(fig, "svd_ns_equivalence")
 
 
-def fig_svd_ns(args) -> None:
-    """Simple appendix diagnostics for the spectral framework."""
-    import torch
-
-    torch.manual_seed(0)
-    ps = [x / 100 for x in range(-25, 101)]              # -0.25 .. 1.0
-    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(5.8, 5.8), gridspec_kw={"height_ratios": [1.2, 1.0]})
-
-    # (1) Norm amplification for representative normalized spectra.
-    k = 64
-    spectra = {
-        "Flat Spectrum": torch.ones(k),
-        "Moderate Decay": torch.linspace(1.0, 0.2, k),
-        "Spiky Spectrum": torch.exp(-torch.linspace(0.0, 4.0, k)),
-    }
-    for label, s in spectra.items():
-        s = s / torch.linalg.norm(s)
-        base = float(torch.sqrt(torch.sum(s.pow(2))))
-        multipliers = [float(torch.sqrt(torch.sum(s.pow(2 * p))) / base) for p in ps]
-        ax0.plot(ps, multipliers, lw=2.0, label=label)
-    phase_marks = ((1.0, "Raw\n$p=1$"), (0.0, "Muon\n$p=0$"), (-0.25, "Late\n$p=-0.25$"))
-    for xpos, _ in phase_marks:
-        ax0.axvline(xpos, color="0.55", lw=0.9, ls=":")
-    ax0.set_yscale("log")
-    ymax = ax0.get_ylim()[1]
-    for xpos, text in phase_marks:
-        ax0.text(xpos, ymax / 1.25, text, rotation=90, va="top", ha="right",
-                 fontsize=7, color="0.35")
-    ax0.set_xlabel(r"Spectral Exponent $p$")
-    ax0.set_ylabel("Relative Update Size")
-    ax0.set_title("Changing the Exponent Also Changes the Step Size")
-    ax0.set_xlim(-0.32, 1.06)
-    ax0.legend(loc="upper right")
-    ax0.grid(alpha=0.3, which="both")
-
-    # (2) DynMuon's shared exponent schedule and phases.
-    total = 1526
-    steps = list(range(total + 1))
-    pvals = [logistic_schedule_p(s, total, -0.25, 1.0, 0.04, 0.04) for s in steps]
-    ax1.plot(steps, pvals, color="black", lw=2.0)
-    ax1.axhspan(0.25, 1.0, color="#4C78A8", alpha=0.16, label="Raw-Momentum Phase")
-    ax1.axhspan(0.0, 0.25, color="#F58518", alpha=0.16, label="Polar/Muon Phase")
-    ax1.axhspan(-0.25, 0.0, color="#54A24B", alpha=0.16, label="Negative-Power Phase")
-    ax1.set_xlabel("Training Step")
-    ax1.set_ylabel(r"Global Exponent $p_t$")
-    ax1.set_title("DynMuon Quickly Moves to the Negative-Power Phase")
-    ax1.legend(loc="upper right")
-    ax1.grid(alpha=0.3)
-    fig.tight_layout(h_pad=2.0)
-    _save(fig, "svd_vs_ns")
-
-
 def fig_cost(args) -> None:
     """Two panels: seconds/step per method, and steps to a common val target."""
     rows = _load_summaries()
@@ -725,15 +697,21 @@ def fig_cost(args) -> None:
         labels.append(label)
         sps.append(_flt(row, "seconds_per_step") or 0.0)
         stt.append(steps_to or 0)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 2.8))
-    ax1.bar(labels, sps, width=0.5)
+    colors = [METHOD_COLORS.get(label, "0.55") for label in labels]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.2, 3.05), constrained_layout=True)
+    ax1.bar(labels, sps, width=0.58, color=colors, edgecolor="0.25", linewidth=0.4, zorder=3)
+    ax1.set_title("Per-step Runtime")
     ax1.set_ylabel("Seconds per Step")
-    ax1.tick_params(axis="x", rotation=25)
-    ax2.bar(labels, stt, width=0.5)
+    _label_positive_bars(ax1, list(sps), "{:.2f}")
+    ax2.bar(labels, stt, width=0.58, color=colors, edgecolor="0.25", linewidth=0.4, zorder=3)
+    ax2.set_title("Progress to Shared Target")
     ax2.set_ylabel(f"Steps to Validation Loss {target:.3f}")
-    ax2.tick_params(axis="x", rotation=25)
+    _label_positive_bars(ax2, [float(x) for x in stt], "{:.0f}")
     for ax in (ax1, ax2):
-        ax.grid(alpha=0.3, axis="y")
+        ax.tick_params(axis="x", rotation=25)
+        for tick in ax.get_xticklabels():
+            tick.set_ha("right")
+        ax.grid(alpha=0.25, axis="y", zorder=0)
     _save(fig, "cost_comparison")
     print(f"  common target = {target:.4f}")
 
@@ -789,14 +767,7 @@ def fig_route_ablation(args) -> None:
         ax.set_ylabel(r"$\Delta$ final validation loss")
         ax.tick_params(axis="x", rotation=25)
         ax.grid(alpha=0.3, axis="y")
-        for i, d in enumerate(deltas):
-            if abs(d) < 0.0005:
-                y, va = (0.0015, "bottom")
-            elif d > 0:
-                y, va = (d + 0.002, "bottom")
-            else:
-                y, va = (d - 0.001, "top")
-            ax.text(i, y, f"{d:+.3f}", ha="center", va=va, fontsize=7)
+        _label_delta_bars(ax, list(deltas), list(stds))
     _save(fig, "route_ablation")
 
 
@@ -858,10 +829,7 @@ def fig_route_robustness(args) -> None:
     ax1.set_ylabel("DynMuon loss - Route-align loss")
     ax1.set_title("Positive Means Routing Helps")
     ax1.grid(alpha=0.3, axis="y")
-    for i, g in enumerate(gains):
-        va = "bottom" if g >= 0 else "top"
-        y = g + (0.002 if g >= 0 else -0.002)
-        ax1.text(i, y, f"{g:+.3f}", ha="center", va=va, fontsize=7)
+    _label_delta_bars(ax1, list(gains), list(gain_errs))
     ax1.text(
         0.02, 0.98,
         "Single proxy: alignment.\nError bars show available seeds.",
@@ -933,14 +901,7 @@ def fig_spectrum_controls(args) -> None:
     ax.tick_params(axis="x", rotation=20)
     ax.grid(alpha=0.3, axis="y")
     ax.legend(fontsize=8, loc="upper left")
-    for i, d in enumerate(deltas):
-        if abs(d) < 0.0005:
-            y, va = (0.002, "bottom")
-        elif d > 0:
-            y, va = (d + 0.006, "bottom")
-        else:
-            y, va = (d - 0.002, "top")
-        ax.text(i, y, f"{d:+.3f}", ha="center", va=va, fontsize=7)
+    _label_delta_bars(ax, list(deltas))
     _save(fig, "spectrum_controls")
 
 
@@ -949,11 +910,6 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("lr_sweep")
     sub.add_parser("bowls")  # backward-compatible alias
-    c = sub.add_parser("curves")
-    c.add_argument("--runs", required=True)
-    c.add_argument("--labels")
-    c.add_argument("--ymax", type=float)
-    c.add_argument("--out")
     l = sub.add_parser("losses")
     l.add_argument("--start-step", dest="start_step", type=int, default=125)
     d = sub.add_parser("depth")
@@ -964,7 +920,6 @@ def main() -> None:
     b = sub.add_parser("beta")
     b.add_argument("--lr", default="0p02", help="LR tag in run names, e.g. 0p02")
     sub.add_parser("proxies")
-    sub.add_parser("svd_ns")
     sub.add_parser("equivalence")
     sub.add_parser("cost")
     sub.add_parser("route_ablation")
@@ -978,7 +933,6 @@ def main() -> None:
         fig_lr_sweep(args)
         args.start_step = 125
         fig_losses(args)
-        fig_svd_ns(args)
         fig_equivalence(args)
         fig_cost(args)
         fig_route_ablation(args)
@@ -997,10 +951,10 @@ def main() -> None:
             except SystemExit as e:
                 print(f"skip {label}: {e}")
         return
-    {"lr_sweep": fig_lr_sweep, "bowls": fig_lr_sweep, "curves": fig_curves,
+    {"lr_sweep": fig_lr_sweep, "bowls": fig_lr_sweep,
      "losses": fig_losses, "depth": fig_depth, "beta": fig_beta,
      "proxies": fig_proxies, "proxy_depth": fig_proxy_depth,
-     "svd_ns": fig_svd_ns, "equivalence": fig_equivalence, "cost": fig_cost,
+     "equivalence": fig_equivalence, "cost": fig_cost,
      "route_ablation": fig_route_ablation, "route_robustness": fig_route_robustness,
      "relmuon_attention": fig_relmuon_attention,
      "spectrum_controls": fig_spectrum_controls}[args.cmd](args)
