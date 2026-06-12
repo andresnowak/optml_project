@@ -1,0 +1,4 @@
+# GatedMuon without matrix weight decay or Muon shape-aware LR scaling.
+extends: gated_muon.yaml
+adjust_lr_fn: none
+run_name: gated_muon_tau1e-5_no_shape_no_wd

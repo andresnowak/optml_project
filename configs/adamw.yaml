@@ -1,4 +1,5 @@
-# Baseline: AdamW on all parameters (no spectral shaping).
+# Baseline: AdamW on matrix parameters, with auxiliary AdamW for embeddings,
+# biases, and norm gains. Aux params share scalar_weight_decay.
 extends: gpt124m.yaml
 matrix_optimizer: adamw
 run_name: adamw

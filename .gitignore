@@ -24,9 +24,12 @@ ENV/
 .ruff_cache/
 
 # ML / training artifacts
-data/
+data/*
+!data/prepare_wikitext.py
+!data/prepare_fineweb.py
+
 artifacts/
-models/
+/models/
 runs/
 wandb/
 mlruns/
@@ -41,3 +44,8 @@ mlruns/
 .DS_Store
 # experiment outputs
 results/
+
+# Ignore the Scope of the project
+SCOPE.md
+report/
+notes/

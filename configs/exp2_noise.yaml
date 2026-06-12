@@ -3,7 +3,8 @@
 # p-trajectory stability.
 extends: small.yaml
 
-max_steps: 300
-eval_every: 300
+# 300 steps ~= 0.042 WikiText epochs with small.yaml batching.
+train_steps: 300
+val_loss_every: 300
 log_every: 5
 noise_lambda: 3.0

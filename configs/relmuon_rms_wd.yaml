@@ -1,0 +1,4 @@
+# RelMuon-RMS with matrix weight decay enabled.
+extends: relmuon_rms.yaml
+run_name: relmuon_rms_wd
+weight_decay: 0.1

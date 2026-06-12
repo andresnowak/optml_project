@@ -1,0 +1,19 @@
+# Kaon: chaotic Newton-Schulz-style spectral shaping.
+#
+# Based on "Muon is Not That Special: Random or Inverted Spectra Work Just as
+# Well" (arXiv:2605.11181). Uses the paper's chaotic map
+# X <- 4.1 * (I - X X^T)^2 X for 5 matrix iterations.
+extends: gpt124m.yaml
+matrix_optimizer: kaon
+run_name: kaon
+
+# Paper Kaon defaults.
+kaon_steps: 5
+kaon_lambda: 4.1
+kaon_output_scale: 1.175
+kaon_eps: 1.0e-7
+
+# Disable repo Muon-style layer shape LR scaling; Kaon's paper scaling is the
+# Frobenius input normalization plus final division by 1.175 above.
+adjust_lr_fn: none
+weight_decay: 0.0

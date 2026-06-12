@@ -8,7 +8,7 @@ proxies — stable rank (sr), SNR (gamma), alignment (alpha). Use it to:
   * check whether a proxy has dynamic range (early vs late) and separates layers.
 
 Usage:
-    python experiments/probe_proxies.py --model small --steps 150
+    python experiments/probe_proxies.py --config configs/small.yaml --steps 150
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dynmuon import MemoryLogger, load_config, train  # noqa: E402
+from src import MemoryLogger, load_config, train  # noqa: E402
 
 METRICS = ["sr", "gamma", "alpha"]
 
@@ -55,13 +55,12 @@ def _stats(v):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/small.yaml")
-    ap.add_argument("--model", choices=["small", "gpt124m"])
     ap.add_argument("--steps", type=int, default=150)
     ap.add_argument("--routing-mode", dest="routing_mode", default="global_schedule")
     args = ap.parse_args()
 
-    cfg = load_config(args.config, {"model": args.model, "max_steps": args.steps,
-                                    "routing_mode": args.routing_mode, "eval_every": 0,
+    cfg = load_config(args.config, {"train_steps": args.steps, "routing_mode": args.routing_mode,
+                                    "val_loss_every": 0,
                                     "log_every": 1})
     logger = MemoryLogger()
     print(f"probing proxies over {args.steps} steps (routing_mode={args.routing_mode})...\n")

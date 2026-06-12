@@ -1,0 +1,10 @@
+# RelMuon-log1p: Muon singular directions with normalized log1p weight-spectrum scales.
+extends: gpt124m.yaml
+matrix_optimizer: relmuon
+run_name: relmuon_log1p
+relmuon_scale_mode: log1p
+
+# Matrix parameters default to no weight decay and no shape LR scaling.
+weight_decay: 0.0
+adjust_lr_fn: none
+relmuon_eps: 1.0e-7

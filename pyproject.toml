@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "DynMuon-Route: dynamic layer-wise spectral-exponent routing for Muon"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "torch>=2.6",
+    "torch>=2.9.0",
     "numpy",
     "pyyaml",
     "tiktoken",
@@ -12,6 +12,7 @@ dependencies = [
     "wandb",
     "matplotlib",
     "pytest",
+    "jupyter>=1.1.1",
 ]
 
 [tool.uv]

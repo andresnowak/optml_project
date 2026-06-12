@@ -1,0 +1,8 @@
+# RelMuon-log1p on attention matrices only.
+#
+# Run through `scripts/run_job.sh spatial`, not `single`. The spatial entry
+# point keeps RelMuon on `.attn.` matrices and routes MLP matrices, embeddings,
+# norms, and biases through AdamW.
+extends: relmuon_log1p.yaml
+run_name: relmuon_log1p_attention
+spatial_ablation: attention_only

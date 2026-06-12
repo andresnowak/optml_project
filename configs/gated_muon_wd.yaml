@@ -1,0 +1,4 @@
+# GatedMuon with matrix weight decay, matching the gpt124m default decay level.
+extends: gated_muon.yaml
+weight_decay: 0.1
+run_name: gated_muon_tau1e-5_wd

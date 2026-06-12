@@ -1,9 +1,9 @@
 # Experiment 1 — spectral evolution. The script runs this config twice, once with
 # routing_mode=global_schedule and once with routing_mode=stable_rank, and plots
-# the per-layer p_{t,l} trajectories. Defaults to the small model for iteration;
-# override --model gpt124m on the cluster.
+# the per-layer p_{t,l} trajectories. Extends the small config for iteration.
 extends: small.yaml
 
-max_steps: 400
-eval_every: 400
+# 400 steps ~= 0.056 WikiText epochs with small.yaml batching.
+train_steps: 400
+val_loss_every: 400
 log_every: 5

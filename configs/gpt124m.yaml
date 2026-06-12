@@ -1,12 +1,35 @@
-# 124M GPT on WikiText-103 (the reference scale). d = min(rows,cols) ≈ 768.
+# Track-3-inspired GPT at the reference 12-layer / 768-dim scale.
 extends: base.yaml
 
 model: gpt124m
+model_dim: 768
+n_layer: 12
+n_head: 6
+sequence_length: 1024
+data_dir: data/fineweb10B
+train_bin: fineweb_train_*.bin
+val_bin: fineweb_val_000000.bin
 
-# token budget — kept small for fast turnaround (~0.2B tokens, a few WT-103
-# epochs). Bump max_steps/grad_accum back up for a full 10B-token run.
-max_steps: 3000
-warmup_steps: 150
-batch_size: 16
-grad_accum: 8             # ~0.13M tokens/step at block_size 1024
-eval_every: 250
+# FineWeb 500M cache: `uv run python data/prepare_fineweb.py 500M`.
+# 262k tokens/step; 1,526 steps ~= 400M train tokens (~0.8 FineWeb epochs).
+muon_lr: 2.0e-2            # max matrix LR
+adam_lr: 6.0e-4           # embeddings / norms / biases
+batch_size: 256
+mbs: 16
+train_steps: 1526
+warmup_steps: 150      # ~10% warmup, then cosine decay
+min_lr_ratio: 0.0      # cosine decay ends at 0
+val_tokens: 10485760
+val_loss_every: 125
+weight_decay: 0.1
+scalar_weight_decay: 0.0  # embeddings / biases / norm gains
+
+# FineWeb runs are long enough that RunAI preemption should resume from disk.
+checkpoint_enabled: true
+checkpoint_resume: true
+
+# Log singular-value summaries for Muon-family matrix weights.
+log_weight_svd: true
+
+# Log how much each matrix weight changes on optimizer steps.
+log_weight_update_ratio: true

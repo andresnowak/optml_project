@@ -1,0 +1,12 @@
+# HomogeneousMuon: Frobenius-normalized fixed SVD power shaping
+# D = U (Sigma / ||M||_F)^p V^T.
+# 0<p<1 partially flattens the spectrum while keeping exact 0 and exact 1 fixed;
+# p=1 keeps the normalized momentum spectrum. The default p=0.25 is the
+# "more homogeneous, not fully flat" setting. Use muon_svd.yaml for the p=0
+# polar endpoint.
+extends: gpt124m.yaml
+matrix_optimizer: homogeneous_muon
+homogeneous_p: 0.25
+weight_decay: 0.1
+adjust_lr_fn: spectral_norm
+run_name: homogeneous_muon_p0p25

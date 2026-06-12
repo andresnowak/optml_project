@@ -1,0 +1,7 @@
+# Router safeguard ablation: raw proxy deviations with an effectively
+# unbounded lean. This is intentionally a stress test for the z-score and
+# lean-cap safeguards used by configs/route.yaml.
+extends: route.yaml
+run_name: dynmuon_route_raw_uncapped
+lean_norm: raw
+lean_max: 1000.0

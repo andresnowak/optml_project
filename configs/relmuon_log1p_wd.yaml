@@ -1,0 +1,7 @@
+# RelMuon-log1p with Muon/DynMuon-style matrix weight decay enabled.
+#
+# This isolates the reviewer confound that the main RelMuon bowl used
+# weight_decay: 0.0 while Muon/DynMuon used 0.1.
+extends: relmuon_log1p.yaml
+run_name: relmuon_log1p_wd
+weight_decay: 0.1

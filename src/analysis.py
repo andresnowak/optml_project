@@ -19,8 +19,7 @@ def dump_history(history: dict, path: str) -> None:
 
 
 def mean_series_by_suffix(history: dict, suffix: str, prefix: str = "route/p/"):
-    """Average the per-layer series whose key is ``prefix...suffix`` (e.g. all
-    layers ending in ``mlp.c_fc.weight``). Returns (steps, values) or None."""
+    """Average the per-layer series whose key is ``prefix...suffix``."""
     keys = [k for k in history if k.startswith(prefix) and k.endswith(suffix)]
     if not keys:
         return None

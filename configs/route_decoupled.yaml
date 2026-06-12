@@ -1,0 +1,18 @@
+# DynMuon-Route with magnitude decoupling (math.tex §3.1 / §6).
+#
+# ||D(p)||_F varies by ~sqrt(min(m,n)) as p moves between 1 and 0, so a routed
+# exponent is also an implicit per-layer LR controller; in the 20k marathon
+# the layers routed to p~1 received ~27x smaller updates and froze.
+# magnitude=polar_fro pins every update to ||D||_F = sqrt(min(m,n)), making
+# the router a pure spectrum-shape controller. Compare against route.yaml to
+# attribute routed gains to geometry vs implicit step size.
+extends: route.yaml
+# reference transform + polar_fro: the magnitude normalization applies to any
+# compute path, and the sweep showed the ns path costs ~21% more wall-clock
+# (fp32 eigh + fp32 NS vs the reference's bf16 NS + Taylor) for a semantic
+# difference confined to the ~4% of steps where the clock traverses p in
+# [0, 0.5]. With lean_max=0.25 and the clock at p_min for ~90% of training,
+# routed exponents stay in the fast_spectral branch almost throughout.
+compute_mode: reference
+magnitude: polar_fro
+run_name: dynmuon_route_decoupled

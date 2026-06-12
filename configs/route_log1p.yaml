@@ -1,0 +1,11 @@
+# SOTA Synthesis: Depth Routing (schedule_modulated) + Log1p RelMuon Spectrum.
+# Combines the stability of Log1p weight-relative updates with the efficiency
+# of schedule-modulated layer routing.
+extends: route.yaml
+spectrum_mode: relmuon_log1p
+run_name: SOTA-synthesis
+
+# Log1p parameters from the successful standalone run
+weight_decay: 0.0
+adjust_lr_fn: none
+eps: 1.0e-7

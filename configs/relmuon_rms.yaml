@@ -1,0 +1,4 @@
+# RelMuon-RMS: Muon singular directions with RMS-normalized weight singular values.
+extends: relmuon_log1p.yaml
+run_name: relmuon_rms
+relmuon_scale_mode: rms
